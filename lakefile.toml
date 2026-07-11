@@ -1,0 +1,15 @@
+name = "Alaya"
+version = "0.1.0"
+defaultTargets = ["alaya"]
+testDriver = "tests"
+
+[[lean_lib]]
+name = "Alaya"
+
+[[lean_exe]]
+name = "alaya"
+root = "Main"
+
+[[lean_exe]]
+name = "tests"
+root = "Test"
