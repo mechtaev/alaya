@@ -11,6 +11,10 @@ structure Config where
   temperature : Float
   structuredOutput : Chat.StructuredOutput := .native
   nativeBatching : Bool := true
+  /-- Abort the whole request after this many milliseconds so a stalled provider cannot hang. -/
+  requestTimeoutMs : Nat := 600000
+  /-- Abort connection establishment after this many milliseconds. -/
+  connectTimeoutMs : Nat := 30000
 
 private def validateResponses (config : Config) (request : Chat.Request)
     (responses : Array Chat.Response) : Result (Array Chat.Response) :=
@@ -19,7 +23,7 @@ private def validateResponses (config : Config) (request : Chat.Request)
     match request.responseFormat with
     | .text => pure response
     | .jsonSchema _ schema =>
-      let _ ← Result.fromExcept Error.structuredOutput <| response.structured schema
+      let _ ← response.structured schema
       pure response
 
 private structure CurlResponse where
@@ -28,6 +32,16 @@ private structure CurlResponse where
   stderr : String
   body : String
   headers : String
+
+/-- Formats a millisecond duration as the decimal seconds string curl expects for its timeouts. -/
+private def secondsArg (ms : Nat) : String :=
+  let whole := ms / 1000
+  let frac := ms % 1000
+  let fracStr :=
+    if frac < 10 then s!"00{frac}"
+    else if frac < 100 then s!"0{frac}"
+    else toString frac
+  s!"{whole}.{fracStr}"
 
 private def curlConfig (apiKey : String) : String :=
   let escape (value : String) := (value.replace "\\" "\\\\").replace "\"" "\\\""
@@ -45,6 +59,8 @@ private def requestIO (config : Config) (payload : String) : IO CurlResponse :=
       cmd := "curl"
       args := #[
         "--silent", "--show-error", "--config", configPath.toString,
+        "--connect-timeout", secondsArg config.connectTimeoutMs,
+        "--max-time", secondsArg config.requestTimeoutMs,
         "--request", "POST", "--data", s!"@{payloadPath}",
         "--output", bodyPath.toString, "--dump-header", headersPath.toString,
         "--write-out", "%{http_code}", s!"{config.baseUrl}/chat/completions"
@@ -66,16 +82,20 @@ private def complete (config : Config) (temperature : Lean.Json) (request : Chat
   let payload := request.toJson config.structuredOutput
     |>.setObjVal! "model" config.name
     |>.setObjVal! "temperature" temperature
-    |>.setObjVal! "n" n
+  -- Omit `n` for single completions so providers without multi-sample support stay compatible.
+  let payload := if n == 1 then payload else payload.setObjVal! "n" n
   let result ← Result.fromIO Error.transport <| requestIO config payload.compress
+  -- curl exit code 28 is a connect or total-request timeout; treat delivery as unknown.
+  if result.exitCode == 28 then
+    throw <| .transport s!"{config.provider} request timed out after {secondsArg config.requestTimeoutMs}s"
+  if result.exitCode != 0 then
+    throw <| .transport s!"{config.provider} request failed: {result.stderr}\n{result.body}"
   let status ← match result.statusOutput.trimAscii.toString.toNat? with
     | some status => pure status
     | none => throw <| .transport s!"{config.provider} returned no HTTP status"
-  if result.exitCode != 0 then
-    throw <| .transport s!"{config.provider} request failed: {result.stderr}\n{result.body}"
   if status < 200 || status >= 300 then throw <| .http status result.body (retryAfterMs? result.headers)
   let raw ← Result.fromExcept Error.protocol <| Lean.Json.parse result.body
-  let responses ← Result.fromExcept Error.protocol <| Chat.Response.fromJsons raw
+  let responses ← Chat.Response.fromJsons raw
   validateResponses config request responses
 
 /-- Creates a one-response transport model for an OpenAI-compatible chat-completions API. -/

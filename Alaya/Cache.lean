@@ -88,57 +88,62 @@ private def save (config : Config) (key : String) (responses : Array Chat.Respon
   IO.FS.writeFile temporary <| (responsesToJson key responses).pretty
   IO.FS.rename temporary path
 
+/-- Runs a cache-backing IO action, mapping any failure to a typed cache error. -/
+private def io (action : IO α) : Result α :=
+  Result.fromIO Error.cache action
+
 /-- Replays response sequences from disk and extends them on cache misses.
 
 Concurrent streams in this process serialize extensions of the same cache entry. Cache directories
 must not be written by more than one process at a time. -/
 def persistent (inner : Model) (config : Config) : Result Model := do
-  let entries ← Result.fromIO Error.cache <| Std.Mutex.new ({} : Std.HashMap String (Std.Mutex (Array Chat.Response)))
+  let entries ← io <| Std.Mutex.new ({} : Std.HashMap String (Std.Mutex (Array Chat.Response)))
   pure {
     identity := inner.identity
     structuredOutput := inner.structuredOutput
     sample := fun request => do
       let key := inner.cacheKey request
-      let loaded ← Result.fromIO Error.cache <| load config key
+      let loaded ← io <| load config key
       let entry ← entries.atomically fun entries => do
         match (← entries.get).get? key with
         | some entry => pure entry
         | none =>
-          let entry ← Result.fromIO Error.cache <| Std.Mutex.new loaded
+          let entry ← io <| Std.Mutex.new loaded
           entries.modify fun entries => entries.insert key entry
           pure entry
-      let index ← Result.fromIO Error.cache <| IO.mkRef 0
-      let nextN (n : Nat) : Result (Array Chat.Response) :=
-        entry.atomically fun responses => do
-          let current ← Result.fromIO Error.cache index.get
-          let allResponses ← Result.fromIO Error.cache responses.get
+      let index ← io <| IO.mkRef 0
+      let nextN (n : Nat) : Result (Array Chat.Response) := do
+        let responses ← entry.atomically fun responses => do
+          let current ← io index.get
+          let allResponses ← io responses.get
           let cached := (List.range n).foldl (fun cached offset =>
             match allResponses[current + offset]? with
             | some response => cached.push response
             | none => cached) #[]
           let missing := n - cached.size
           if missing == 0 then
-            let _ ← Result.fromIO Error.cache <| index.set (current + n)
+            let _ ← io <| index.set (current + n)
             pure cached
           else if config.readOnly then
             throw <| .cache "persistent cache miss in read-only mode"
           else
-            let sampled ← inner.completeN request missing
+            let sampled ← (← inner.sample request).nextN missing
             if sampled.size != missing then
               throw <| .protocol "model returned the wrong number of responses"
-            let _ ← Result.fromIO Error.cache <| responses.modify fun responses => responses ++ sampled
-            let saved ← Result.fromIO Error.cache responses.get
-            let _ ← Result.fromIO Error.cache <| save config key saved
-            let _ ← Result.fromIO Error.cache <| index.set (current + n)
+            let _ ← io <| responses.modify fun responses => responses ++ sampled
+            let saved ← io responses.get
+            let _ ← io <| save config key saved
+            let _ ← io <| index.set (current + n)
             pure <| cached ++ sampled
+        -- Responses loaded from disk carry no mode, so stamp the model's structured-output mode
+        -- here, at the single point where responses leave the cache.
+        pure <| responses.map fun response => { response with structuredOutput := inner.structuredOutput }
       let next : Result Chat.Response := do
         let responses ← nextN 1
         match responses[0]? with
-        | some response => pure { response with structuredOutput := inner.structuredOutput }
+        | some response => pure response
         | none => throw <| .protocol "model returned no responses"
-      pure { next, nextN? := some fun n => do
-        let responses ← nextN n
-        pure <| responses.map fun response => { response with structuredOutput := inner.structuredOutput } }
+      pure { next, nextN? := some nextN }
   }
 
 end Alaya.Cache

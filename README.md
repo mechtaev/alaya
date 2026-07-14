@@ -6,9 +6,9 @@ Run the sample app:
 lake exe alaya
 ```
 
-It asks Yunwu for four independently chosen integers from 1 to 1,000,000. The app requests
-uncached samples concurrently and prints them in request order. Responses are persisted in
-`.alaya/cache`; rerunning the app replays the same ordered sequence without sending another
-provider request.
+It asks Yunwu to generate a small, documented function, requesting two candidates concurrently and
+retrying whenever a reply fails structured-output validation. Each response is schema-validated,
+parsed into typed fields, and printed. Responses are persisted in `.alaya/cache`; rerunning the app
+replays them without sending another provider request.
 
 Set `YUNWU_API_KEY` before running.

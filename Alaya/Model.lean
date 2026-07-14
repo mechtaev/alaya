@@ -40,14 +40,6 @@ def cacheKey (model : Model) (request : Chat.Request) : String :=
     ("request", request.toJson model.structuredOutput)
   ] |>.compress
 
-def complete (model : Model) (request : Chat.Request) : Result Chat.Response := do
-  let response ← (← model.sample request).next
-  pure { response with structuredOutput := model.structuredOutput }
-
-def completeN (model : Model) (request : Chat.Request) (n : Nat) : Result (Array Chat.Response) := do
-  let responses ← (← model.sample request).nextN n
-  pure <| responses.map fun response => { response with structuredOutput := model.structuredOutput }
-
 /-- Retries each single response operation before a batching adapter fans it out. -/
 def retry (inner : Model) (config : Retry.Config) : Result Model :=
   pure {
@@ -109,7 +101,8 @@ def repeatable (inner : Model) : Result Model := do
           match responses[current]? with
           | some response => pure response
           | none =>
-            let response ← inner.complete request
+            let stream ← inner.sample request
+            let response ← stream.next
             let _ ← Result.fromIO Error.cache <| entries.modify fun entries =>
               entries.insert key ((entries.getD key #[]).push response)
             pure response

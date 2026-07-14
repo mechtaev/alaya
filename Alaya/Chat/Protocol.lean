@@ -1,4 +1,5 @@
 import Alaya.Chat.Schema
+import Alaya.Error
 
 namespace Alaya.Chat
 
@@ -187,34 +188,37 @@ private def fencedJson (content : String) : Except String String :=
   | _ => throw "response content has no markdown code fence"
 
 /-- Parses and validates a structured assistant response against `schema`. -/
-def structured (response : Response) (schema : JsonSchema) : Except String Lean.Json := do
-  let content ←
-    match response.content? with
-    | some content => pure content
-    | none => throw "response has no message content"
-  let content ← match response.structuredOutput with
-    | .native => pure content
-    | .markdownCodeFence => fencedJson content
-  let json ← liftJson "response content is not valid JSON" <| Lean.Json.parse content
-  schema.validate json
-  pure json
+def structured (response : Response) (schema : JsonSchema) : Result Lean.Json :=
+  Result.fromExcept Error.structuredOutput do
+    let content ←
+      match response.content? with
+      | some content => pure content
+      | none => throw "response has no message content"
+    let content ← match response.structuredOutput with
+      | .native => pure content
+      | .markdownCodeFence => fencedJson content
+    let json ← liftJson "response content is not valid JSON" <| Lean.Json.parse content
+    schema.validate json
+    pure json
 
-def fromJsons (raw : Lean.Json) : Except String (Array Response) := do
-  let choices ← liftJson "response has no choices" <| raw.getObjVal? "choices" >>= Lean.Json.getArr?
-  let usage? := usageFromJson? raw
-  choices.mapM fun choice => do
-    let message ← liftJson "response choice has no message" <| choice.getObjVal? "message"
-    let content? := (message.getObjVal? "content" >>= Lean.Json.getStr?).toOption
-    let toolCalls ← match message.getObjVal? "tool_calls" with
-      | .ok calls => calls.getArr?.bind fun calls => calls.mapM parseToolCall
-      | .error _ => pure #[]
-    pure { content?, toolCalls, usage?, raw }
+def fromJsons (raw : Lean.Json) : Result (Array Response) :=
+  Result.fromExcept Error.protocol do
+    let choices ← liftJson "response has no choices" <| raw.getObjVal? "choices" >>= Lean.Json.getArr?
+    let usage? := usageFromJson? raw
+    choices.mapM fun choice => do
+      let message ← liftJson "response choice has no message" <| choice.getObjVal? "message"
+      let content? := (message.getObjVal? "content" >>= Lean.Json.getStr?).toOption
+      let toolCalls ← match message.getObjVal? "tool_calls" with
+        | .ok .null => pure #[]
+        | .ok calls => calls.getArr?.bind fun calls => calls.mapM parseToolCall
+        | .error _ => pure #[]
+      pure { content?, toolCalls, usage?, raw }
 
-def fromJson (raw : Lean.Json) : Except String Response := do
+def fromJson (raw : Lean.Json) : Result Response := do
   let responses ← fromJsons raw
   match responses[0]? with
   | some response => pure response
-  | none => throw "response has no choices"
+  | none => throw <| .protocol "response has no choices"
 
 end Response
 end Alaya.Chat

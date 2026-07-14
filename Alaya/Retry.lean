@@ -9,6 +9,8 @@ structure Config where
   retryUnknownDelivery : Bool := false
   /-- Retry a fresh completion when the model response fails structured-output validation. -/
   retryStructuredOutput : Bool := false
+  /-- Retry a fresh completion when a response cannot be parsed as a valid completion. -/
+  retryMalformedResponse : Bool := false
   /-- Uniform jitter as a fraction of an exponential backoff delay. -/
   jitter : Float := 0.2
 
@@ -17,18 +19,21 @@ structure Config where
 Retry known transient HTTP statuses. Transport failures are opt-in because the server may have
 received and processed the request before the connection failed. Structured-output validation
 failures are also opt-in: another sample can satisfy the schema, but a bad schema or prompt will
-fail repeatedly. Configuration, protocol, provider, cache, and cancellation failures are terminal. -/
+fail repeatedly. Malformed-response failures are opt-in for the same reason: a truncated or garbled
+body may parse on a retry, but a genuine protocol mismatch will not. Configuration, provider, cache,
+and cancellation failures are terminal. -/
 private def retryable (config : Config) : Error -> Bool
   | .http status _ _ => status == 408 || status == 409 || status == 425 || status == 429 ||
       (500 <= status && status < 600)
   | .transport _ => config.retryUnknownDelivery
   | .structuredOutput _ => config.retryStructuredOutput
+  | .protocol _ => config.retryMalformedResponse
   | _ => false
 
 /-- Uses the provider's `Retry-After` delay when available, otherwise capped exponential backoff. -/
 private def delayMs (config : Config) (attempt : Nat) (error : Error) : Result Nat :=
   match error with
-  | .http _ _ (some delay) => pure delay
+  | .http _ _ (some delay) => pure <| min config.maxDelayMs delay
   | _ => do
     let backoff := min config.maxDelayMs <| config.initialDelayMs * 2 ^ attempt
     let spread := max 0 (min 1 config.jitter)
