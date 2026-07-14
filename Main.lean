@@ -40,4 +40,4 @@ def main : IO Unit := do
     IO.println snippet.documentation
     IO.println ""
     IO.println snippet.code
-    IO.println ""
+    IO.println "---------------"

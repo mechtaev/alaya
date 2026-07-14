@@ -65,8 +65,11 @@ def batch (inner : Model) (mode : BatchSampling) : Result Model :=
         | .native => stream.nextN n
         | .sequential => Model.Stream.nextN { next := stream.next } n
         | .concurrent => do
+          -- Each request blocks its thread on a curl subprocess for the whole round-trip, so run it
+          -- on a dedicated thread rather than a shared task-pool worker. Default-priority tasks would
+          -- cap real parallelism at the pool size and let blocked workers starve the scheduler.
           let tasks ← Result.fromIO Error.transport <| (List.replicate n ()).mapM fun _ =>
-            BaseIO.asTask (do
+            BaseIO.asTask (prio := .dedicated) (do
               match (← (inner.sample request).toBaseIO) with
               | .ok stream => stream.next.toBaseIO
               | .error error => pure <| .error error)
