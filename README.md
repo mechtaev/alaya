@@ -74,6 +74,7 @@ them to any unambiguous prefix.
 
 ```
 alaya root TASK PROJECT [--image IMAGE]          create a root state from a project directory
+alaya root TASK --image IMAGE --path PATH        …or from a path inside the image
 alaya resume HASH --model P:M                    grow one continuation to completion
 alaya step   HASH --model P:M                    advance exactly one model turn
 alaya commit HASH DIR [-m NOTE]                  record a hand-edited workspace as a child
@@ -127,6 +128,17 @@ one command is visible to the next, as in mini. What that costs: **only `/worksp
 a state.** Packages installed into the image's filesystem live as long as the run and are gone
 when a branch is resumed later. Anything that must survive branching belongs in the workspace or
 in the image.
+
+**Seeding from the image.** Task images usually carry the project already, so there may be
+nothing on the host to point `root` at. `--path PATH` copies that path out of the image instead
+of taking a `PROJECT` directory:
+
+```sh
+root=$(alaya root "fix the failing test" --image swebench/task:latest --path /testbed)
+```
+
+The copy uses a container that is created but never started, so nothing in the image runs while
+the trajectory is being seeded.
 
 Timeouts are enforced inside the container with `timeout(1)` when the image has one, so a
 runaway command's whole process group dies as it does locally; a host-side deadline kills the

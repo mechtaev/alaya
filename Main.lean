@@ -74,22 +74,54 @@ private def runtimeFor (data : DataDir) (work : WorkDir) (args : Cli.Args)
   pure { model, store := data.store, workDir := work.path, executor, config }
 
 /-- The `uname` a new trajectory's prompt is built from, and the image it is pinned to: read
-from the container when `--image` is given, from the host otherwise. -/
-private def rootEnvironment (args : Cli.Args) : Result (Uname × Option String) := do
-  match ← Docker.settings? args with
+from the image when there is one, from the host otherwise. -/
+private def rootEnvironment (settings? : Option Docker.Settings) :
+    Result (Uname × Option String) := do
+  match settings? with
   | none => pure (← Result.fromIO Error.configuration Uname.local, none)
-  | some settings =>
-    let settings ← settings.pin
-    pure (← Docker.uname settings, some settings.image)
+  | some settings => pure (← Docker.uname settings, some settings.image)
+
+/-- Empties the work directory. Both a checkout and an extraction from an image need it to start
+clean, and it is the one place holding nothing durable. -/
+private def clearWork (data : DataDir) : Result WorkDir := do
+  let work ← openWork data
+  Result.fromIO Error.storage do
+    IO.FS.removeDirAll work.path
+    IO.FS.createDirAll work.path
+  pure work
+
+/-- The directory a new trajectory snapshots: a host `PROJECT`, or `--path` copied out of the
+image — task images usually carry the project already, so there is nothing on the host to point
+at. An extraction lands in the work directory, which is disposable by construction. -/
+private def rootProject (args : Cli.Args) (data : DataDir) (settings? : Option Docker.Settings)
+    (project? : Option String) : Result System.FilePath := do
+  match project?, args.get? "path" with
+  | some project, none => pure project
+  | none, some path =>
+    if path.isEmpty then throw <| .configuration "--path needs a value (e.g. --path /testbed)"
+    match settings? with
+    | none => throw <| .configuration "--path names a path inside an image: pass --image too"
+    | some settings =>
+      let work ← clearWork data
+      Docker.copyOut settings path work.path
+      pure work.path
+  | some _, some _ =>
+    throw <| .configuration "give either a PROJECT directory or --path PATH, not both"
+  | none, none =>
+    throw <| .configuration "alaya root TASK (PROJECT | --path PATH --image IMAGE)"
 
 private def modelSpecOf (args : Cli.Args) : String := args.getD "model" ""
 
 private def dispatch (argv : List String) : Result Unit := do
   let args := Cli.parse argv (aliases := [("-m", "note")])
   match args.positional.toList with
-  | ["root", task, project] =>
+  | "root" :: task :: rest =>
+    if rest.length > 1 then
+      throw <| .configuration "alaya root TASK (PROJECT | --path PATH --image IMAGE)"
     let data ← openData args
-    let (uname, image?) ← rootEnvironment args
+    let settings? ← (← Docker.settings? args).mapM (·.pin)
+    let (uname, image?) ← rootEnvironment settings?
+    let project ← rootProject args data settings? rest.head?
     let hash ← createRoot data.store { task } project uname image?
     emit hash.hex
   | "resume" :: pfx :: _ =>
@@ -138,7 +170,7 @@ private def dispatch (argv : List String) : Result Unit := do
     emit s!"removed {n} state(s)"
   | _ =>
     throw <| .configuration <|
-      "usage: alaya (root TASK PROJECT | resume HASH --model P:M | step HASH --model P:M | " ++
+      "usage: alaya (root TASK (PROJECT | --path P --image I) | resume HASH --model P:M | step HASH --model P:M | " ++
       "commit HASH DIR [-m NOTE] | checkout HASH DIR | tree | show HASH | diff A B | rm HASH) " ++
       "[--data D] [--temperature T] [--url U] [--port N] [--image IMAGE] [--network N]"
 

@@ -153,6 +153,19 @@ private def start (settings : Settings) (workDir : System.FilePath) : IO Contain
 private def remove (id : String) : IO Unit := do
   let _ ← client #["rm", "--force", id]
 
+/-- Copies the contents of `path` in the image into `destination`, which must already exist.
+The container is created but never started, so nothing in the image runs — this seeds a
+trajectory from an image that already carries the project, the way task images usually do. -/
+def copyOut (settings : Settings) (path : String) (destination : System.FilePath) : Result Unit := do
+  let host ← Result.fromIO Error.storage (IO.FS.realPath destination)
+  let id ← docker #["create", "--entrypoint", "/bin/sh", settings.image, "-c", "true"]
+    s!"creating a container from {settings.image}"
+  try
+    let _ ← docker #["cp", s!"{id}:{path}/.", host.toString]
+      s!"copying {path} out of {settings.image}"
+  finally
+    Result.fromIO Error.storage (remove id)
+
 /-! ## Running one command -/
 
 /-- Mini's timeout observation, byte-identical to the local executor's. -/

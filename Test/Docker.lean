@@ -158,6 +158,27 @@ def suite : Suite := Testing.suite "docker" #[
       finally
         executor.close,
 
+  test "seeds a workspace from a path inside the image" <| withDocker
+    fun settings => do
+      let work ← workspace
+      -- Never started, so nothing in the image runs: this only reads the image's filesystem.
+      assertOk <| Docker.copyOut settings "/etc/apk" work
+      let contents ← IO.FS.readFile (work / "repositories")
+      check (!contents.isEmpty) "expected alpine's /etc/apk/repositories to be copied out"
+      -- Copied files belong to the host user, or the store could neither read nor wipe them.
+      IO.FS.removeFile (work / "repositories")
+      let store ← assertOk <| Cas.Store.create ((← scratch) / "store")
+      let snapshot ← assertOk <| store.snapshot work
+      check (← assertOk (store.entryAt? snapshot "world")).isSome
+        "expected /etc/apk/world in the snapshot",
+
+  test "a path that is not in the image is a configuration error" <| withDocker
+    fun settings => do
+      let work ← workspace
+      assertError "copyOut" (Docker.copyOut settings "/no/such/path" work) fun
+        | .configuration m => (m.splitOn "/no/such/path").length > 1
+        | _ => false,
+
   test "a missing image is a configuration error naming it" <| withDocker
     fun _ => do
       let missing : Docker.Settings := { image := "alaya.invalid/nope@sha256:0" }
