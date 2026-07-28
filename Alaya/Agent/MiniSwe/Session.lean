@@ -329,7 +329,13 @@ resumes deterministically from its cache. -/
 def advance (rt : Runtime) (modelSpec : String) (parent : Hash) (dialogue : Dialogue)
     (env : Hash) (consecutiveFormatErrors : Nat) :
     Result (Hash × Dialogue × Hash × Nat × Option Outcome) := do
-  let childCount := (← children rt.store parent).size
+  -- Only children that came from sampling consume a draw: an evaluation or an intervention is
+  -- recorded against a state without asking the model anything, and counting it would push the
+  -- next continuation past a draw the cache holds, costing a request to replay a branch.
+  let mut childCount := 0
+  for child in ← children rt.store parent do
+    let kind := (← getState rt.store child).kind
+    if kind == .agent || kind == .formatError then childCount := childCount + 1
   -- Children run in whatever the parent ran in; the image and base commit are properties of
   -- the trajectory.
   let parentState ← getState rt.store parent
@@ -373,9 +379,16 @@ def advance (rt : Runtime) (modelSpec : String) (parent : Hash) (dialogue : Dial
       outcome? := submitted, note? := some modelSpec, image?, baseCommit? }
     pure (child, dialogue ++ appended, env, 0, submitted)
 
-/-- Materializes `state`'s workspace into `rt.workDir`, replacing whatever is there. -/
+/-- Materializes `state`'s workspace into `rt.workDir`, replacing whatever is there.
+
+`verify` is what makes this sound. The work directory is modified after every checkout — by the
+commands of the run, and by the overlay an evaluation applies — while the store's record of it
+still names the hash that was checked out. Without re-capturing the directory first, an
+incremental materialize would trust that record and leave everything those writes added: a fork
+would start from the abandoned branch's files, and a turn after an evaluation would start from
+the hidden tests. -/
 private def checkoutInto (rt : Runtime) (env : Hash) : Result Unit :=
-  rt.store.materialize env rt.workDir { onExisting := .replace }
+  rt.store.materialize env rt.workDir { onExisting := .replace, verify := true }
 
 /-- Advances exactly one model turn from `hash`, returning the new child state. -/
 def stepOnce (rt : Runtime) (modelSpec : String) (hash : Hash) : Result Hash := do

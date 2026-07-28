@@ -378,6 +378,32 @@ def sessionSuite : Suite := suite "mini.session" #[
     let hostRoot ← assertOk <| createRoot rt.store { task := "t" } (← emptyProject) testUname
     assertEqual "host root" (← assertOk (getState rt.store hostRoot)).image? none,
 
+  test "a fork does not inherit the abandoned branch's files" do
+    let rt ← cachedRuntime #[
+      responseWith #[call "a" "bash" "echo junk > junk.txt"],
+      responseWith #[call "b" "bash" "echo other > other.txt"]]
+    let root ← assertOk <| createRoot rt.store { task := "t" } (← emptyProject) testUname
+    let first ← assertOk <| stepOnce rt "test:model" root
+    check (← assertOk (rt.store.entryAt? (← assertOk (getState rt.store first)).env "junk.txt")).isSome
+      "the first branch should have written junk.txt"
+    -- Forking checks the root's workspace out again: the first branch's file must be gone.
+    let second ← assertOk <| stepOnce rt "test:model" root
+    let state ← assertOk (getState rt.store second)
+    check (← assertOk (rt.store.entryAt? state.env "other.txt")).isSome
+      "the second branch should have written other.txt"
+    check (← assertOk (rt.store.entryAt? state.env "junk.txt")).isNone
+      "a fork must not start from the abandoned branch's workspace",
+
+  test "an evaluation's overlay never reaches a later turn" do
+    let rt ← cachedRuntime #[responseWith #[call "a" "bash" "echo hi > after.txt"]]
+    let root ← assertOk <| createRoot rt.store { task := "t" } (← emptyProject) testUname
+    let _ ← assertOk <| evaluate rt root "test -f tests/extra.txt" (.directory (← testsDir))
+    -- The hidden tests were overlaid into the work directory; the next turn must not see them.
+    let child ← assertOk <| stepOnce rt "test:model" root
+    let state ← assertOk (getState rt.store child)
+    check (← assertOk (rt.store.entryAt? state.env "tests/extra.txt")).isNone
+      "an evaluation's tests must never reach a state the agent continues from",
+
   test "an evaluation is a leaf that nothing can be built on" do
     let rt ← cachedRuntime #[responseWith #[call "c1" "bash" "echo hi"]]
     let project ← emptyProject

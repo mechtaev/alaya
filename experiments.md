@@ -98,6 +98,44 @@ once producing a format error; it then submitted while its own `uv run pytest` w
   directory. Correct, and heavy: the store grows by an environment per turn that touches it.
   Worth an ignore list in `Cas.CaptureConfig` before running this at scale.
 
+### 1a. Forking, and the bug it exposed
+
+Forking the run at `ff730e730bea`, the last turn before the agent started patching its own
+`build_file`:
+
+```sh
+alaya resume ff730e730bea --model yunwu:gpt-5.4-mini --temperature 0.7
+```
+
+Temperature matters here: the run was sampled at 0, so a fork at 0 retraces the same path and
+wastes the turns. The branch lasted two turns — it tried to run every sample program in one
+Python process instead of calling pytest, hit the 30-second command timeout while `uv` was still
+downloading CPython into a fresh container, and submitted on the timeout.
+
+**Its first turn recorded 275 of the reference test files into its workspace.** Not the agent's
+doing: `Store.materialize` is incremental and trusts the store's record of what a directory
+holds, and nothing updated that record after the writes that a run and an evaluation make to the
+work directory. The next checkout therefore applied a diff from a stale record and left
+everything those writes had added — the abandoned branch's files for any fork, and, after an
+evaluation, the hidden tests. That broke the property `eval` exists to guarantee.
+
+`checkoutInto` now materializes with `verify := true`, so the directory is re-captured and a
+mismatch forces a full write. Two tests cover it (`mini.session`), and forking the same state
+again records a workspace identical to its parent's:
+
+| fork of `ff730e730bea` | paths changed vs parent | of which `tests/` |
+| ---------------------- | ----------------------: | ----------------: |
+| `2b833e5015ee` (before) |                     469 |               275 |
+| `b726098ad308` (after)  |                       0 |                 0 |
+
+The same investigation turned up a second defect: an evaluation is a child, so it was counted
+when choosing the next draw index, which pushed a later continuation past a draw the cache
+already held — evaluating a state made replaying its branch cost a fresh request. Only children
+that came from sampling count now.
+
+The branch under `2b833e5015ee` still holds the leaked tests, since states are immutable. It is
+kept as the record of the bug; do not grade anything descended from it.
+
 ### Where to go next
 
 The trajectory is a tree, so the interesting continuations are branches, not new runs. The last
