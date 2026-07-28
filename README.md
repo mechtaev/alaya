@@ -81,6 +81,7 @@ alaya eval   HASH --command C [--test-patch F]   run tests against a state, reco
 alaya commit HASH DIR [-m NOTE]                  record a hand-edited workspace as a child
 alaya checkout HASH DIR                          materialize a state's workspace into DIR
 alaya tree                                       show the whole forest
+alaya html [FILE]                                write the whole forest as one HTML page
 alaya show HASH                                  show a state's metadata and dialogue
 alaya diff A B                                   workspace changes between two states
 alaya rm HASH                                    delete a subtree and reclaim blobs
@@ -193,6 +194,22 @@ something:
 
 Note that a verdict is a different axis from a run's `Outcome`: a submitted run can fail its
 tests, and a run that hit the step limit can pass them.
+
+### Reading a run back
+
+`alaya html` writes the entire data directory to a single self-contained page — no network, no
+assets — defaulting to `D/report.html`:
+
+```sh
+alaya html && open .alaya/report.html
+```
+
+The tree is on the left and the selected state fills the rest: its metadata, the messages that
+turn appended (assistant text, the commands it ran, and each observation with its return code),
+the workspace changes it made as a line diff, and any verdict recorded against it. Long output
+is clipped with a toggle, and files are collapsed until opened. Text is carried into the diff
+only when it is small and textual and not under a generated directory such as `.venv/`, so a
+report stays a readable size; those paths are still listed, just not diffed.
 
 ### Sampling, caching, and branching
 

@@ -217,6 +217,12 @@ private def dispatch (argv : List String) : Result Unit := do
     let state ← getState data.store (← resolve data.store pfx)
     data.store.materialize state.env dir { onExisting := .replace }
     emit s!"checked out {state.env.hex} into {dir}"
+  | "html" :: rest =>
+    let data ← openData args
+    let out : System.FilePath := rest.head?.getD (data.path / "report.html").toString
+    let page ← Html.report data.store s!"alaya {data.path}"
+    Result.fromIO Error.storage (IO.FS.writeFile out page)
+    emit s!"wrote {out} ({page.length} bytes)"
   | ["tree"] =>
     let data ← openData args
     emitLines (← treeLines data.store)
@@ -234,6 +240,7 @@ private def dispatch (argv : List String) : Result Unit := do
     throw <| .configuration <|
       "usage: alaya (root TASK (PROJECT | --path P --image I) | resume HASH --model P:M | step HASH --model P:M | " ++
       "eval HASH --command C | commit HASH DIR [-m NOTE] | checkout HASH DIR | tree | " ++
+      "html [FILE] | " ++
       "show HASH | diff A B | rm HASH) " ++
       "[--data D] [--temperature T] [--url U] [--port N] [--image IMAGE] [--network N] " ++
       "[--base-commit SHA] [--tests DIR | --test-patch FILE | --tests-from-image PATH] " ++

@@ -12,3 +12,4 @@ import Alaya.Agent
 import Alaya.Agent.MiniSwe
 import Alaya.Agent.MiniSwe.Session
 import Alaya.Agent.MiniSwe.Docker
+import Alaya.Agent.MiniSwe.Html
