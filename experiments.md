@@ -278,6 +278,55 @@ program rather than a file that merely reproduces its output.
 reported success honestly, and was 66 programs short. A benchmark whose visible tests are its
 grading tests would have scored this run 100%.
 
+## 4. Does the wording of the task change the outcome?
+
+**Question.** Runs 1–3 were asked for "the acceptance suite in tests/ to pass", which makes the
+twelve visible programs the target rather than the specification. Run 3 satisfied all twelve and
+reported success while 66 of the hidden 232 failed. Does saying so explicitly help?
+
+**Setup.** As run 3 — same model, image and temperature — with the task statement replaced by
+`benchmarks/bija/TASK.txt`, which says the specification is the requirement, that `tests/` is a
+sample exercising a fraction of it, that the work is judged by a much larger unseen suite, and
+that sections no sample touches still have to be right.
+
+```sh
+rm -rf .alaya
+root=$(alaya root "$(cat benchmarks/bija/TASK.txt)" benchmarks/bija/skeleton \
+  --image ghcr.io/astral-sh/uv:python3.12-alpine3.23)
+alaya resume "$root" --model yunwu:gpt-5.6-luna
+alaya eval 4aaea9202615 --tests /tmp/bija-overlay \
+  --command "uv run pytest -q --tb=no -p no:cacheprovider" --timeout 1800
+```
+
+### Result
+
+**It did not help.** 17 turns against 16, and 310 of 464 against run 3's 332.
+
+| Area        | run 3 | run 4 |         | Area        | run 3 | run 4 |
+| ----------- | ----: | ----: | ------- | ----------- | ----: | ----: |
+| `attempt`   | 16/16 | 14/16 |         | `operators` | 22/25 | 21/25 |
+| `ripen`     | 19/19 | 19/19 |         | `control`   | 16/18 | 15/18 |
+| `seeds`     | 18/18 | 17/18 |         | `values`    | 11/12 | 10/12 |
+| `builtins`  | 22/22 | 22/22 |         | `programs`  | 11/16 |  8/16 |
+| `lexical`   | 11/11 | 11/11 |         | **`errors`**| **6/60** | **5/60** |
+| `deeds`     | 14/15 | 13/15 |         | **Total**   | **166/232** | **155/232** |
+
+The area the wording was aimed at did not move: `errors` went from 6 to 5, and **not one command
+in the run mentions diagnostics at all**. The agent's closing message says the implementation
+"passes all sample output comparisons" — it still measured itself by the sample, having been told
+in the same breath that the sample was not the requirement.
+
+One run per condition, so the difference between 166 and 155 is not evidence that the new wording
+is worse; the honest reading is that it changed nothing measurable. Two things it does not
+change: the agent stops when it believes it is done, and 60 error cases whose exact text the
+specification fixes is a body of work no prompt conjures in seventeen turns.
+
+The wording stays, because the old version was wrong on principle — the sample is not the
+requirement, and a statement that says otherwise misdescribes the task. But if the goal is to
+move the number, the levers are elsewhere: a step budget that keeps the agent working, a
+self-check it cannot satisfy by running the sample, or splitting the work into a task per
+section of the specification.
+
 ### Where to go next
 
 The trajectory is a tree, so the interesting continuations are branches, not new runs. Run 2's
