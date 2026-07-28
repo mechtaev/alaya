@@ -179,6 +179,35 @@ def suite : Suite := Testing.suite "docker" #[
         | .configuration m => (m.splitOn "/no/such/path").length > 1
         | _ => false,
 
+  test "an evaluation runs its command in the trajectory's container" <| withDocker
+    fun settings => do
+      let work ← workspace
+      let project := (← scratch) / "proj"
+      assertOk <| Result.fromIO Error.storage do
+        IO.FS.createDirAll project
+        IO.FS.writeFile (project / "app.txt") "code\n"
+      let tests := (← scratch) / "tests-src"
+      assertOk <| Result.fromIO Error.storage do
+        IO.FS.createDirAll tests
+        IO.FS.writeFile (tests / "check.sh") "grep -q code /workspace/app.txt\n"
+      let store ← assertOk <| Cas.Store.create ((← scratch) / "store")
+      let model ← scripted #[]
+      let executor ← assertOk (Docker.executor settings config)
+      let rt : Runtime := { model, store, workDir := work, executor, config }
+      try
+        let uname ← assertOk (Docker.uname settings)
+        let root ← assertOk <|
+          Session.createRoot store config project uname (some settings.image)
+        -- `/workspace` only exists inside the container, so this passing proves where it ran.
+        let node ← assertOk <|
+          Session.evaluate rt root "sh check.sh && uname -s" (.directory tests)
+        let state ← assertOk (Session.getState store node)
+        assertEqual "passed" (state.evaluation?.map (·.passed)) (some true)
+        assertEqual "ran in the container" (state.evaluation?.map (·.output)) (some "Linux\n")
+        assertEqual "image inherited" state.image? (some settings.image)
+      finally
+        executor.close,
+
   test "a missing image is a configuration error naming it" <| withDocker
     fun _ => do
       let missing : Docker.Settings := { image := "alaya.invalid/nope@sha256:0" }

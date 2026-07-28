@@ -112,6 +112,51 @@ private def rootProject (args : Cli.Args) (data : DataDir) (settings? : Option D
 
 private def modelSpecOf (args : Cli.Args) : String := args.getD "model" ""
 
+/-- The commit a project starts at, for restoring test files before a patch. Taken from
+`--base-commit`, or read from the checkout when it is a git repository. -/
+private def baseCommitOf (args : Cli.Args) (project : System.FilePath) :
+    Result (Option String) := do
+  match args.get? "base-commit" with
+  | some commit => pure (some commit)
+  | none =>
+    let out ← Result.fromIO Error.storage <| IO.Process.output {
+      cmd := "git", args := #["-C", project.toString, "rev-parse", "HEAD"] }
+    pure (if out.exitCode == 0 then some out.stdout.trimAscii.toString else none)
+
+/-- The tests to overlay before a test command runs. `--tests-from-image` is extracted first,
+into a directory beside the workspace, so the overlay is an ordinary directory by the time the
+session applies it. -/
+private def overlayOf (args : Cli.Args) (data : DataDir) (image? : Option String) :
+    Result Overlay := do
+  match args.get? "tests", args.get? "test-patch", args.get? "tests-from-image" with
+  | none, none, none => pure .nothing
+  | some directory, none, none => pure (.directory directory)
+  | none, some file, none =>
+    pure (.patch (← Result.fromIO Error.storage (IO.FS.readFile file)))
+  | none, none, some path =>
+    match image? with
+    | none => throw <| .configuration "--tests-from-image needs a trajectory pinned to an image"
+    | some pinned =>
+      let extracted := data.path / "tests"
+      Result.fromIO Error.storage do
+        IO.FS.removeDirAll extracted
+        IO.FS.createDirAll extracted
+      Docker.copyOut (← Docker.settingsFor args pinned) path extracted
+      pure (.directory extracted)
+  | _, _, _ =>
+    throw <| .configuration "give at most one of --tests, --test-patch, --tests-from-image"
+
+/-- A runtime for running tests: no model is needed, and the timeout is a test suite's rather
+than a single agent command's. -/
+private def evalRuntime (data : DataDir) (work : WorkDir) (args : Cli.Args)
+    (image? : Option String) : Result Runtime := do
+  let config : Config := { task := "", timeoutSeconds := ← args.natD "timeout" 900 }
+  let executor ← executorFor args image? config
+  pure {
+    model := { identity := .mkObj [("model", "none")]
+               sample := fun _ => throw (.configuration "evaluation does not call a model") }
+    store := data.store, workDir := work.path, executor, config }
+
 private def dispatch (argv : List String) : Result Unit := do
   let args := Cli.parse argv (aliases := [("-m", "note")])
   match args.positional.toList with
@@ -122,7 +167,8 @@ private def dispatch (argv : List String) : Result Unit := do
     let settings? ← (← Docker.settings? args).mapM (·.pin)
     let (uname, image?) ← rootEnvironment settings?
     let project ← rootProject args data settings? rest.head?
-    let hash ← createRoot data.store { task } project uname image?
+    let baseCommit? ← baseCommitOf args project
+    let hash ← createRoot data.store { task } project uname image? baseCommit?
     emit hash.hex
   | "resume" :: pfx :: _ =>
     let data ← openData args
@@ -144,6 +190,22 @@ private def dispatch (argv : List String) : Result Unit := do
     let rt ← runtimeFor data (← openWork data) args (← getState data.store parent).image?
     try
       emit (← stepOnce rt (modelSpecOf args) parent).hex
+    finally
+      Result.fromIO Error.storage rt.executor.close
+  | "eval" :: pfx :: _ =>
+    let data ← openData args
+    let target ← resolve data.store pfx
+    let state ← getState data.store target
+    let command ← args.require "command" "e.g. --command 'pytest -x tests/test_foo.py'"
+    let overlay ← overlayOf args data state.image?
+    let rt ← evalRuntime data (← openWork data) args state.image?
+    try
+      let node ← evaluate rt target command overlay (force := args.isSet "force")
+      match (← getState data.store node).evaluation? with
+      | some e =>
+        let verdict := if e.passed then "pass" else s!"fail {e.returncode}"
+        emit s!"{node.hex}  {verdict}  ({e.elapsedMs} ms)"
+      | none => emit node.hex
     finally
       Result.fromIO Error.storage rt.executor.close
   | ["commit", pfx, dir] =>
@@ -171,8 +233,11 @@ private def dispatch (argv : List String) : Result Unit := do
   | _ =>
     throw <| .configuration <|
       "usage: alaya (root TASK (PROJECT | --path P --image I) | resume HASH --model P:M | step HASH --model P:M | " ++
-      "commit HASH DIR [-m NOTE] | checkout HASH DIR | tree | show HASH | diff A B | rm HASH) " ++
-      "[--data D] [--temperature T] [--url U] [--port N] [--image IMAGE] [--network N]"
+      "eval HASH --command C | commit HASH DIR [-m NOTE] | checkout HASH DIR | tree | " ++
+      "show HASH | diff A B | rm HASH) " ++
+      "[--data D] [--temperature T] [--url U] [--port N] [--image IMAGE] [--network N] " ++
+      "[--base-commit SHA] [--tests DIR | --test-patch FILE | --tests-from-image PATH] " ++
+      "[--timeout S] [--force]"
 
 def main (args : List String) : IO UInt32 := do
   match ← (dispatch args).toBaseIO with

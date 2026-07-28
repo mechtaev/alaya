@@ -82,6 +82,9 @@ inductive Kind where
   | agent
   | formatError
   | intervention
+  /-- A test run against a state, with an overlay the agent never saw. Always a leaf: see
+  `Evaluation`. -/
+  | evaluation
   deriving BEq, Repr, Inhabited
 
 def Kind.toString : Kind -> String
@@ -89,13 +92,32 @@ def Kind.toString : Kind -> String
   | .agent => "agent"
   | .formatError => "format_error"
   | .intervention => "intervention"
+  | .evaluation => "evaluation"
 
 def Kind.ofString? : String -> Option Kind
   | "root" => some .root
   | "agent" => some .agent
   | "format_error" => some .formatError
   | "intervention" => some .intervention
+  | "evaluation" => some .evaluation
   | _ => none
+
+/-- The result of running a test command against a state.
+
+This is a separate axis from `Outcome`, which says how a *run* ended: a submitted run can fail
+its tests and a run that hit the step limit can pass them. -/
+structure Evaluation where
+  command : String
+  returncode : Int
+  elapsedMs : Nat
+  /-- Truncated like an observation, so a failing run stays readable in `show`. -/
+  output : String
+  /-- What was overlaid onto the workspace before the command ran: a directory snapshot, or the
+  patch blob. Content-addressed, so the same test set across many trajectories is stored once. -/
+  tests? : Option Hash := none
+  deriving Inhabited
+
+def Evaluation.passed (evaluation : Evaluation) : Bool := evaluation.returncode == 0
 
 /-- One command run within a state's turn, recorded for `tree`/`show`. -/
 structure Command where
@@ -118,6 +140,12 @@ structure State where
   outcome? : Option Outcome := none
   /-- Provenance: the model spec that produced this turn, or an intervention note. -/
   note? : Option String := none
+  /-- The verdict, on an `evaluation` state. -/
+  evaluation? : Option Evaluation := none
+  /-- The commit the project started at, inherited from the root, when it was a git checkout.
+  Evaluation restores the files a test patch touches to this commit first, so an agent that
+  edited the tests cannot decide its own verdict. -/
+  baseCommit? : Option String := none
   /-- The pinned container image the commands of this trajectory run in, inherited from the
   parent, or `none` when it runs on the host. Recorded so a continuation runs the same bits the
   earlier turns did — and so the `uname` frozen into the root dialogue stays true. -/
@@ -125,6 +153,20 @@ structure State where
   deriving Inhabited
 
 namespace State
+
+private def evaluationToJson (e : Evaluation) : Lean.Json :=
+  .mkObj [
+    ("command", e.command), ("returncode", (e.returncode : Lean.Json)),
+    ("elapsed_ms", (e.elapsedMs : Lean.Json)), ("output", e.output),
+    ("tests", e.tests?.map (Lean.Json.str ·.hex) |>.getD .null)]
+
+private def evaluationFromJson (json : Lean.Json) : Except String Evaluation := do
+  let command ← json.getObjVal? "command" >>= Lean.Json.getStr?
+  let returncode ← json.getObjVal? "returncode" >>= Lean.Json.getInt?
+  let elapsedMs ← json.getObjVal? "elapsed_ms" >>= Lean.Json.getNat?
+  let output ← json.getObjVal? "output" >>= Lean.Json.getStr?
+  let tests? := (json.getObjVal? "tests" >>= Lean.Json.getStr?).toOption.map (⟨·⟩)
+  pure { command, returncode, elapsedMs, output, tests? }
 
 private def outcomeToJson (o : Outcome) : Lean.Json :=
   .mkObj [("status", o.status), ("submission", o.submission)]
@@ -145,7 +187,9 @@ def toJson (state : State) : Lean.Json :=
       .mkObj [("command", c.command), ("returncode", (c.returncode : Lean.Json))])),
     ("outcome", state.outcome?.map outcomeToJson |>.getD .null),
     ("note", state.note?.map Lean.Json.str |>.getD .null),
-    ("image", state.image?.map Lean.Json.str |>.getD .null)]
+    ("image", state.image?.map Lean.Json.str |>.getD .null),
+    ("base_commit", state.baseCommit?.map Lean.Json.str |>.getD .null),
+    ("evaluation", state.evaluation?.map evaluationToJson |>.getD .null)]
 
 def fromJson (json : Lean.Json) : Except String State := do
   let parent? := (json.getObjVal? "parent" >>= Lean.Json.getStr?).toOption.map (⟨·⟩)
@@ -165,7 +209,13 @@ def fromJson (json : Lean.Json) : Except String State := do
   let note? := (json.getObjVal? "note" >>= Lean.Json.getStr?).toOption
   -- Absent in states written before images were recorded, which is exactly `none`.
   let image? := (json.getObjVal? "image" >>= Lean.Json.getStr?).toOption
-  pure { parent?, env, kind, appended, commands, outcome?, note?, image? }
+  let baseCommit? := (json.getObjVal? "base_commit" >>= Lean.Json.getStr?).toOption
+  let evaluation? ← match json.getObjVal? "evaluation" with
+    | .ok .null => pure none
+    | .ok e => some <$> evaluationFromJson e
+    | .error _ => pure none
+  pure { parent?, env, kind, appended, commands, outcome?, note?, image?, baseCommit?
+         evaluation? }
 
 end State
 
@@ -280,8 +330,10 @@ def advance (rt : Runtime) (modelSpec : String) (parent : Hash) (dialogue : Dial
     (env : Hash) (consecutiveFormatErrors : Nat) :
     Result (Hash × Dialogue × Hash × Nat × Option Outcome) := do
   let childCount := (← children rt.store parent).size
-  -- Children run in whatever the parent ran in; the image is a property of the trajectory.
-  let image? := (← getState rt.store parent).image?
+  -- Children run in whatever the parent ran in; the image and base commit are properties of
+  -- the trajectory.
+  let parentState ← getState rt.store parent
+  let (image?, baseCommit?) := (parentState.image?, parentState.baseCommit?)
   let stream ← rt.model.sample { messages := dialogue, tools := #[bashTool] }
   let responses ← stream.nextN (childCount + 1)
   let response ← match responses[childCount]? with
@@ -299,7 +351,7 @@ def advance (rt : Runtime) (modelSpec : String) (parent : Hash) (dialogue : Dial
     let appended := #[Chat.Message.user message]
     let child ← putState rt.store {
       parent? := some parent, env, kind := .formatError, appended,
-      outcome?, note? := some modelSpec, image? }
+      outcome?, note? := some modelSpec, image?, baseCommit? }
     pure (child, dialogue ++ appended, env, consecutiveFormatErrors, outcome?)
   | .actions actions =>
     let assistant := assistantOf response
@@ -318,7 +370,7 @@ def advance (rt : Runtime) (modelSpec : String) (parent : Hash) (dialogue : Dial
     let appended := #[assistant] ++ observations
     let child ← putState rt.store {
       parent? := some parent, env, kind := .agent, appended, commands,
-      outcome? := submitted, note? := some modelSpec, image? }
+      outcome? := submitted, note? := some modelSpec, image?, baseCommit? }
     pure (child, dialogue ++ appended, env, 0, submitted)
 
 /-- Materializes `state`'s workspace into `rt.workDir`, replacing whatever is there. -/
@@ -330,6 +382,9 @@ def stepOnce (rt : Runtime) (modelSpec : String) (hash : Hash) : Result Hash := 
   let state ← getState rt.store hash
   if state.outcome?.isSome then
     throw <| .configuration "cannot continue: this state already ended the run"
+  if state.kind == .evaluation then
+    throw <| .configuration
+      "cannot continue from an evaluation: its workspace holds tests the agent never saw"
   checkoutInto rt state.env
   let dialogue ← dialogueOf rt.store hash
   let (child, _, _, _, _) ← advance rt modelSpec hash dialogue state.env 0
@@ -342,6 +397,9 @@ partial def resume (rt : Runtime) (modelSpec : String) (hash : Hash)
   let start ← getState rt.store hash
   if start.outcome?.isSome then
     throw <| .configuration "cannot continue: this state already ended the run"
+  if start.kind == .evaluation then
+    throw <| .configuration
+      "cannot continue from an evaluation: its workspace holds tests the agent never saw"
   checkoutInto rt start.env
   let dialogue ← dialogueOf rt.store hash
   let rec go (parent : Hash) (dialogue : Dialogue) (env : Hash) (cfe : Nat) : Result Hash := do
@@ -352,26 +410,146 @@ partial def resume (rt : Runtime) (modelSpec : String) (hash : Hash)
     | none => go child dialogue env cfe
   go hash dialogue start.env 0
 
+/-! ## Evaluation
+
+Running tests against a state is deliberately not part of the run: the tests are an overlay the
+agent never saw, and letting them into a state it could continue from would both contaminate the
+trajectory and, for a benchmark, invalidate the measurement. So an evaluation is a leaf child
+whose workspace is the agent's plus the overlay, and `resume`/`step`/`commit` refuse it. -/
+
+/-- What to overlay onto a state's workspace before the test command runs. Both forms are
+authoritative: what they carry replaces what the agent left, so an agent that weakened a test
+cannot decide its own verdict. -/
+inductive Overlay where
+  | nothing
+  /-- A host directory whose contents are copied over the workspace. -/
+  | directory (path : System.FilePath)
+  /-- A unified diff. The files it touches are first restored to the trajectory's base commit
+  (or deleted, when they did not exist there), so it applies to pristine content. -/
+  | patch (contents : String)
+
+/-- The paths a unified diff touches, read from its `+++` lines. -/
+def patchPaths (patch : String) : Array String := Id.run do
+  let mut paths := #[]
+  for line in patch.splitOn "\n" do
+    if line.startsWith "+++ " then
+      let target := ((line.drop 4).toString.splitOn "\t").headD ""
+      let target := target.trimAscii.toString
+      let target := if target.startsWith "b/" then (target.drop 2).toString else target
+      if target != "/dev/null" && !target.isEmpty && !paths.contains target then
+        paths := paths.push target
+  paths
+
+/-- Single-quotes a path for `/bin/sh`. -/
+private def shellQuote (s : String) : String :=
+  "'" ++ s.replace "'" "'\\''" ++ "'"
+
+/-- The overlay's content address, so an evaluation records exactly what was applied and the
+same test set shared by many trajectories is stored once. -/
+private def overlayHash (store : Store) : Overlay -> Result (Option Hash)
+  | .nothing => pure none
+  | .directory path => some <$> store.snapshot path
+  | .patch contents => some <$> store.putBytes contents.toUTF8
+
+/-- The name the patch is written under inside the workspace; removed before the snapshot, so it
+never becomes part of the evaluated tree. -/
+private def patchFile : String := ".alaya-test.patch"
+
+private def applyOverlay (rt : Runtime) (state : State) : Overlay -> Result Unit
+  | .nothing => pure ()
+  | .directory path => do
+    let source ← Result.fromIO Error.storage (IO.FS.realPath path)
+    let copy ← Result.fromIO Error.storage (IO.Process.output {
+      cmd := "cp", args := #["-R", s!"{source}/.", rt.workDir.toString] })
+    if copy.exitCode != 0 then
+      throw <| .storage s!"cannot overlay {source}: {copy.stderr}"
+  | .patch contents => do
+    let paths := patchPaths contents
+    if paths.isEmpty then throw <| .configuration "the test patch touches no files"
+    -- Restore what the patch touches to the base commit, so the agent's edits to the tests
+    -- cannot survive; a path that did not exist at the base commit is removed instead.
+    if let some base := state.baseCommit? then
+      let quoted := " ".intercalate (paths.map shellQuote).toList
+      let reset ← Result.fromIO Error.storage <| execBash rt <|
+        s!"for p in {quoted}; do git checkout {base} -- \"$p\" 2>/dev/null || rm -f \"$p\"; done"
+      if reset.returncode != 0 then
+        throw <| .configuration s!"restoring test files to {base} failed: {reset.output}"
+    Result.fromIO Error.storage (IO.FS.writeFile (rt.workDir / patchFile) contents)
+    let applied ← Result.fromIO Error.storage <| execBash rt s!"git apply -v {patchFile}"
+    Result.fromIO Error.storage (IO.FS.removeFile (rt.workDir / patchFile))
+    if applied.returncode != 0 then
+      throw <| .configuration s!"applying the test patch failed: {applied.output}"
+
+/-- Keeps a test run readable in `show` without putting megabytes in a state blob. -/
+private def truncateOutput (s : String) : String :=
+  if s.length <= 20000 then s
+  else
+    let elided := s.length - 20000
+    String.ofList (s.toList.take 10000) ++ s!"\n… {elided} characters elided …\n" ++
+      String.ofList (s.toList.drop (s.length - 10000))
+
+/-- An evaluation of `hash` that already ran this command against this overlay. -/
+def evaluationOf? (store : Store) (hash : Hash) (command : String) (tests? : Option Hash) :
+    Result (Option Hash) := do
+  for child in ← children store hash do
+    let state ← getState store child
+    if state.kind == .evaluation then
+      if let some e := state.evaluation? then
+        if e.command == command && e.tests? == tests? then return some child
+  pure none
+
+/-- Runs `command` against `hash`'s workspace with `overlay` applied, and records the verdict as
+a leaf child. The command runs wherever the trajectory runs — in its pinned container, if it has
+one — and under `rt.config.timeoutSeconds`, which a caller should set far higher than the
+agent's per-command limit. Re-evaluating the same state, command, and overlay returns the
+existing node unless `force`. -/
+def evaluate (rt : Runtime) (hash : Hash) (command : String) (overlay : Overlay)
+    (force : Bool := false) : Result Hash := do
+  let state ← getState rt.store hash
+  if state.kind == .evaluation then
+    throw <| .configuration "cannot evaluate an evaluation: it is already a leaf"
+  let tests? ← overlayHash rt.store overlay
+  if !force then
+    if let some existing ← evaluationOf? rt.store hash command tests? then return existing
+  checkoutInto rt state.env
+  applyOverlay rt state overlay
+  let started ← Result.fromIO Error.storage IO.monoMsNow
+  let output ← Result.fromIO Error.storage (execBash rt command)
+  let elapsedMs := (← Result.fromIO Error.storage IO.monoMsNow) - started
+  let env ← rt.store.snapshot rt.workDir
+  putState rt.store {
+    parent? := some hash, env, kind := .evaluation, appended := #[]
+    image? := state.image?, baseCommit? := state.baseCommit?
+    evaluation? := some {
+      command, returncode := output.returncode, elapsedMs
+      output := truncateOutput (output.output ++
+        (if output.exceptionInfo.isEmpty then "" else s!"\n{output.exceptionInfo}"))
+      tests? } }
+
 /-! ## Root creation and interventions -/
 
 /-- Creates a root state from the initial project directory: the system+instance dialogue and a
 snapshot of `project`. -/
 def createRoot (store : Store) (config : Config) (project : System.FilePath)
-    (uname : Uname) (image? : Option String := none) : Result Hash := do
+    (uname : Uname) (image? : Option String := none) (baseCommit? : Option String := none) :
+    Result Hash := do
   let env ← store.snapshot project
   putState store {
     parent? := none, env, kind := .root, appended := initialDialogue config uname
-    note? := some config.task, image? }
+    note? := some config.task, image?, baseCommit? }
 
 /-- Records a hand-edited workspace `dir` as an intervention child of `hash`: same dialogue, new
 workspace snapshot, marked distinctly. -/
 def commit (store : Store) (hash : Hash) (dir : System.FilePath) (note? : Option String) :
     Result Hash := do
   let parent ← getState store hash
+  if parent.kind == .evaluation then
+    throw <| .configuration
+      "cannot build on an evaluation: its workspace holds tests the agent never saw"
   let env ← store.snapshot dir
   putState store {
     parent? := some hash, env, kind := .intervention, appended := #[], note?
-    image? := parent.image? }
+    image? := parent.image?, baseCommit? := parent.baseCommit? }
 
 /-! ## Rendering -/
 
@@ -393,6 +571,12 @@ private def label (state : State) : String :=
     "bash  " ++ cmd ++ rc
   | .formatError => "format-error"
   | .intervention => "commit  " ++ (state.note?.getD "")
+  | .evaluation =>
+    match state.evaluation? with
+    | some e =>
+      let verdict := if e.passed then "pass" else s!"fail {e.returncode}"
+      s!"eval  [{verdict}]  " ++ commandSummary (.str e.command)
+    | none => "eval"
 
 private def outcomeSuffix (state : State) : String :=
   match state.outcome? with
@@ -429,6 +613,13 @@ def showLines (store : Store) (hash : Hash) : Result (Array String) := do
     s!"env      {state.env.hex}"]
   if let some note := state.note? then lines := lines.push s!"note     {note}"
   if let some image := state.image? then lines := lines.push s!"image    {image}"
+  if let some base := state.baseCommit? then lines := lines.push s!"base     {base}"
+  if let some e := state.evaluation? then
+    lines := lines.push s!"command  {e.command}"
+    lines := lines.push s!"verdict  {if e.passed then "pass" else "fail"} (rc={e.returncode}, {e.elapsedMs} ms)"
+    if let some tests := e.tests? then lines := lines.push s!"tests    {tests.hex}"
+    lines := lines.push "--- test output ---"
+    lines := lines.push e.output
   if let some o := state.outcome? then
     lines := lines.push s!"outcome  {o.status}"
     if o.submission != "" then lines := lines.push s!"submission:\n{o.submission}"

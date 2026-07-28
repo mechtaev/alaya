@@ -77,6 +77,7 @@ alaya root TASK PROJECT [--image IMAGE]          create a root state from a proj
 alaya root TASK --image IMAGE --path PATH        …or from a path inside the image
 alaya resume HASH --model P:M                    grow one continuation to completion
 alaya step   HASH --model P:M                    advance exactly one model turn
+alaya eval   HASH --command C [--test-patch F]   run tests against a state, recording a verdict
 alaya commit HASH DIR [-m NOTE]                  record a hand-edited workspace as a child
 alaya checkout HASH DIR                          materialize a state's workspace into DIR
 alaya tree                                       show the whole forest
@@ -146,6 +147,53 @@ container as a backstop, and the next command starts a fresh one. Docker's own f
 missing image, a dead daemon) become exception observations rather than crashing the run, and
 the container is removed when the run ends.
 
+### Evaluating a state
+
+`alaya eval HASH --command C` checks out a state's workspace, overlays a set of tests the agent
+never saw, runs the command there, and records the verdict as a **leaf child** of the state:
+
+```sh
+alaya eval 4f2c --command "pytest -x tests/test_foo.py" --test-patch ./test_patch.diff
+# 7b19d4c2ff01  fail 1  (48210 ms)
+```
+
+| Flag                     | Default | Meaning                                              |
+| ------------------------ | ------- | ---------------------------------------------------- |
+| `--command C`            | —       | the test command (required)                          |
+| `--tests DIR`            | —       | overlay a host directory onto the workspace          |
+| `--test-patch FILE`      | —       | apply a unified diff (SWE-bench's `test_patch`)      |
+| `--tests-from-image PATH`| —       | copy the tests out of the trajectory's image         |
+| `--timeout S`            | `900`   | how long the test command may run                    |
+| `--force`                | off     | re-run instead of returning the existing verdict     |
+
+The evaluation is a node like any other, so the tree shows it and `checkout` gives you the exact
+tree that was tested:
+
+```
+adbac197aea8  root  fix the failing test
+  4f2c8b1e0a33  bash  pytest tests/test_foo.py rc=1
+    7b19d4c2ff01  eval  [fail 1]  pytest -x tests/test_foo.py
+```
+
+Three properties this buys, all of which matter if the number at the end is meant to mean
+something:
+
+- **The tests never reach the agent.** They are in the eval node's workspace, never in the state
+  it was run against, and `resume`, `step`, and `commit` refuse an evaluation node. A benchmark
+  run cannot be contaminated by its own measurement.
+- **The overlay wins.** Overlaid files replace whatever the agent left. With `--test-patch`, the
+  files the patch touches are first restored to the trajectory's **base commit** (recorded at
+  `root`, from `--base-commit` or read from the checkout's `HEAD`) — or deleted, if they did not
+  exist there — so an agent that weakened or removed a test does not get to decide its own
+  verdict.
+- **Everything is addressed.** The overlay is stored by content, so one test set shared across
+  hundreds of task instances is stored once, and `alaya diff 4f2c 7b19` is exactly what the
+  harness added. Re-evaluating the same state, command, and overlay returns the existing node
+  rather than piling up duplicates.
+
+Note that a verdict is a different axis from a run's `Outcome`: a submitted run can fail its
+tests, and a run that hit the step limit can pass them.
+
 ### Sampling, caching, and branching
 
 Responses are cached in `D/cache`, keyed by the request *and a draw index*. Growing a
@@ -178,9 +226,18 @@ alaya resume <new-hash> --model dgx:gpt-oss-120b
 alaya rm 4f2c                    # drop a subtree and garbage-collect its blobs
 ```
 
+A SWE-bench-shaped run, start to finish:
+
+```sh
+root=$(alaya root "$PROBLEM_STATEMENT" --image "$TASK_IMAGE" --path /testbed)
+final=$(alaya resume "$root" --model dgx:gpt-oss-120b | tail -1 | cut -d' ' -f1)
+alaya eval "$final" --test-patch ./test_patch.diff \
+  --command "python -m pytest -rA $FAIL_TO_PASS $PASS_TO_PASS"
+```
+
 Every command takes `--data`. `root` additionally takes `--image` (with `--container-user` and
-`--network`); `resume` and `step` take `--model`, `--temperature`, and the DGX flags
-`--url`/`--port`.
+`--network`) and `--base-commit`; `resume` and `step` take `--model`, `--temperature`, and the
+DGX flags `--url`/`--port`; `eval` takes the flags in its table above.
 
 ## `benchmark`
 

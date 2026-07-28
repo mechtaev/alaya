@@ -314,6 +314,34 @@ private def cachedRuntime (responses : Array Chat.Response) : TestM Runtime := d
 private def testUname : Uname :=
   { system := "Linux", release := "6.1.0", version := "#1 SMP", machine := "x86_64" }
 
+/-- A directory standing in for a hidden test set. -/
+private def testsDir : TestM System.FilePath := do
+  let dir := (← scratch) / "tests-src"
+  assertOk <| Result.fromIO Error.storage do
+    IO.FS.createDirAll (dir / "tests")
+    IO.FS.writeFile (dir / "tests" / "extra.txt") "hidden\n"
+  pure dir
+
+/-- A git checkout whose committed `test_x.py` is the one an evaluation must restore. -/
+private def gitProject : TestM System.FilePath := do
+  let dir := (← scratch) / "git-proj"
+  assertOk <| Result.fromIO Error.storage do
+    IO.FS.createDirAll dir
+    IO.FS.writeFile (dir / "test_x.py") "assert 1 == 1\n"
+  let git (args : Array String) : TestM Unit := do
+    let out ← IO.Process.output { cmd := "git", args := #["-C", dir.toString] ++ args }
+    if out.exitCode != 0 then fail s!"git {args}: {out.stderr}"
+  git #["init", "--quiet"]
+  git #["config", "user.email", "t@example.com"]
+  git #["config", "user.name", "t"]
+  git #["add", "."]
+  git #["commit", "--quiet", "-m", "base"]
+  pure dir
+
+private def headCommit (dir : System.FilePath) : TestM String := do
+  let out ← IO.Process.output { cmd := "git", args := #["-C", dir.toString, "rev-parse", "HEAD"] }
+  pure out.stdout.trimAscii.toString
+
 private def emptyProject : TestM System.FilePath := do
   let proj := (← scratch) / "proj"
   assertOk <| Result.fromIO Error.storage (IO.FS.createDirAll proj)
@@ -349,6 +377,64 @@ def sessionSuite : Suite := suite "mini.session" #[
     -- A trajectory created without an image keeps running on the host.
     let hostRoot ← assertOk <| createRoot rt.store { task := "t" } (← emptyProject) testUname
     assertEqual "host root" (← assertOk (getState rt.store hostRoot)).image? none,
+
+  test "an evaluation is a leaf that nothing can be built on" do
+    let rt ← cachedRuntime #[responseWith #[call "c1" "bash" "echo hi"]]
+    let project ← emptyProject
+    assertOk <| Result.fromIO Error.storage (IO.FS.writeFile (project / "app.txt") "code\n")
+    let root ← assertOk <| createRoot rt.store { task := "t" } project testUname
+    let node ← assertOk <| evaluate rt root "test -f tests/extra.txt" (.directory (← testsDir))
+    let state ← assertOk (getState rt.store node)
+    assertEqual "kind" state.kind Kind.evaluation
+    assertEqual "verdict" (state.evaluation?.map (·.passed)) (some true)
+    -- The overlay is in the evaluated tree...
+    check (← assertOk (rt.store.entryAt? state.env "tests/extra.txt")).isSome
+      "expected the overlay in the evaluated workspace"
+    -- ...and not in the state that was evaluated.
+    check (← assertOk (rt.store.entryAt? (← assertOk (getState rt.store root)).env
+      "tests/extra.txt")).isNone "the agent's state must not gain the tests"
+    -- Nothing may continue from it.
+    assertError "step" (stepOnce rt "test:model" node) fun
+      | .configuration m => (m.splitOn "cannot continue from an evaluation").length > 1
+      | _ => false
+    assertError "resume" (resume rt "test:model" node (fun _ => pure ())) fun
+      | .configuration m => (m.splitOn "cannot continue from an evaluation").length > 1
+      | _ => false
+    assertError "commit" (commit rt.store node project none) fun
+      | .configuration m => (m.splitOn "cannot build on an evaluation").length > 1
+      | _ => false,
+
+  test "a failing test command is recorded as a failing verdict, and re-evaluating is a no-op" do
+    let rt ← cachedRuntime #[]
+    let root ← assertOk <| createRoot rt.store { task := "t" } (← emptyProject) testUname
+    let node ← assertOk <| evaluate rt root "exit 3" .nothing
+    let state ← assertOk (getState rt.store node)
+    assertEqual "returncode" (state.evaluation?.map (·.returncode)) (some 3)
+    assertEqual "passed" (state.evaluation?.map (·.passed)) (some false)
+    assertEqual "same node again" (← assertOk <| evaluate rt root "exit 3" .nothing) node
+    assertEqual "one child" (← assertOk (children rt.store root)).size 1
+    -- A different command is a separate evaluation of the same state.
+    let other ← assertOk <| evaluate rt root "true" .nothing
+    check (other != node) "expected a distinct node for a distinct command"
+    assertEqual "two children" (← assertOk (children rt.store root)).size 2,
+
+  test "a test patch is applied over the agent's edits, from the base commit" do
+    let rt ← cachedRuntime #[]
+    let project ← gitProject
+    let base ← headCommit project
+    -- The agent weakens the test and edits the code.
+    assertOk <| Result.fromIO Error.storage (IO.FS.writeFile (project / "test_x.py") "assert True\n")
+    let root ← assertOk <|
+      createRoot rt.store { task := "t" } project testUname none (some base)
+    let patch := "--- a/test_x.py\n+++ b/test_x.py\n@@ -1 +1 @@\n-assert 1 == 1\n+assert 1 == 2\n"
+    let node ← assertOk <| evaluate rt root "cat test_x.py" (.patch patch)
+    let state ← assertOk (getState rt.store node)
+    -- The agent's version was reset to the base commit, then the patch applied on top.
+    assertEqual "hidden test wins" (state.evaluation?.map (·.output)) (some "assert 1 == 2\n")
+    assertEqual "patch recorded" (state.evaluation?.bind (·.tests?)).isSome true
+    -- The patch file itself is not part of the evaluated tree.
+    check (← assertOk (rt.store.entryAt? state.env ".alaya-test.patch")).isNone
+      "the patch file must not be snapshotted",
 
   test "resume drives to submission and records a chain" do
     let rt ← cachedRuntime #[
