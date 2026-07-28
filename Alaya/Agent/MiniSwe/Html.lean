@@ -147,10 +147,10 @@ font-size:10px}
 .sum{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .count{flex:none;color:#8a94a0;font-size:11px;margin-left:6px}
 .hash{color:#8a6d3b}
-.kind{display:inline-block;min-width:52px;padding:0 5px;margin-right:6px;border-radius:3px;
-font-size:10px;text-transform:uppercase;letter-spacing:.04em;text-align:center;color:#fff}
-.k-root{background:#555}.k-agent{background:#3a6ea5}.k-format_error{background:#a55}
-.k-intervention{background:#7a5aa5}.k-evaluation{background:#2f7d4f}
+.ic{flex:none;display:inline-flex;align-items:center;justify-content:center;width:16px;
+height:14px;margin-right:5px}
+.i-root{color:#4a4a4a}.i-agent{color:#3a6ea5}.i-format_error{color:#b04a4a}
+.i-intervention{color:#7a5aa5}.i-pass{color:#2f7d4f}.i-fail{color:#b02020}
 .chip{display:inline-block;padding:0 6px;border-radius:9px;font-size:11px;margin-left:6px;
 background:#eee;color:#444}
 .chip.ok{background:#d8f0dd;color:#1c5c33}.chip.bad{background:#f7dcdc;color:#8a2b2b}
@@ -231,22 +231,46 @@ const nodes = new Map();     // hash -> {row, rest, twisty, built, open}
 const ROWS_AT_ONCE = 300;    // how much of a chain one expansion follows
 const ROWS_AT_START = 300;   // how much of the forest is open when the page loads
 
+/* A glyph per kind, on a 14x14 grid: a seed for a root, a prompt for an agent turn, a warning
+   for a format error, a diamond for a hand-made commit, and a tick or cross for a verdict. */
+const GLYPHS = {
+  root: '<circle cx=\"7\" cy=\"7\" r=\"2.6\"/><circle cx=\"7\" cy=\"7\" r=\"5.6\" fill=\"none\"/>',
+  agent: '<path d=\"M2.5 3.5L6 7l-3.5 3.5\" fill=\"none\"/><path d=\"M7.5 10.5h4\" fill=\"none\"/>',
+  format_error: '<path d=\"M7 1.8L13 12H1z\" fill=\"none\"/><path d=\"M7 5.4v3\" fill=\"none\"/>' +
+    '<circle cx=\"7\" cy=\"10.4\" r=\".8\" stroke=\"none\"/>',
+  intervention: '<path d=\"M7 1.6L12.4 7 7 12.4 1.6 7z\" fill=\"none\"/>',
+  pass: '<path d=\"M2.2 7.4l3.3 3.3L11.8 4\" fill=\"none\"/>',
+  fail: '<path d=\"M3.2 3.2l7.6 7.6M10.8 3.2l-7.6 7.6\" fill=\"none\"/>'
+};
+
+function glyphOf(state) {
+  if (state.kind !== 'evaluation') return state.kind;
+  return state.evaluation && state.evaluation.passed ? 'pass' : 'fail';
+}
+
+function icon(state) {
+  const key = glyphOf(state);
+  const holder = el('span', 'ic i-' + key);
+  holder.title = state.kind === 'evaluation'
+    ? 'evaluation: ' + (key === 'pass' ? 'passed' : 'failed') : state.kind;
+  holder.innerHTML = '<svg viewBox=\"0 0 14 14\" width=\"13\" height=\"13\" ' +
+    'stroke=\"currentColor\" stroke-width=\"1.5\" stroke-linecap=\"round\" ' +
+    'stroke-linejoin=\"round\" fill=\"currentColor\">' + (GLYPHS[key] || GLYPHS.agent) +
+    '</svg>';
+  return holder;
+}
+
 function rowFor(state) {
   const row = el('div', 'node');
   row.dataset.hash = state.hash;
   const twisty = el('span', 'tw', childrenOf(state.hash).length ? '\\u25be' : '\\u00b7');
-  const kind = el('span', 'kind k-' + state.kind,
-    state.kind === 'format_error' ? 'error' : state.kind === 'intervention' ? 'commit' :
-    state.kind === 'evaluation' ? 'eval' : state.kind);
   const text = el('span', 'sum');
   text.append(el('span', 'hash', short(state.hash) + ' '), document.createTextNode(summary(state)));
-  row.append(twisty, kind, text);
+  row.append(twisty, icon(state), text);
   const commands = state.commands || [];
   const rc = commands.length ? commands[commands.length - 1].returncode : null;
   if (rc !== null && rc !== 0) row.append(el('span', 'chip bad', 'rc ' + rc));
   if (state.outcome) row.append(el('span', 'chip', state.outcome.status));
-  if (state.evaluation) row.append(el('span', 'chip ' + (state.evaluation.passed ? 'ok' : 'bad'),
-    state.evaluation.passed ? 'pass' : 'fail'));
   const count = el('span', 'count');
   row.append(count);
   row.onclick = () => select(state.hash);

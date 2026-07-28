@@ -208,6 +208,10 @@ The tree is on the left and the selected state fills the rest: its metadata, the
 turn appended (assistant text, the commands it ran, and each observation with its return code),
 the workspace changes it made as a line diff, and any verdict recorded against it.
 
+Each row carries a glyph for what the state is — a seed for a root, a prompt for an agent turn,
+a warning for a format error, a diamond for a hand-made commit, and a tick or a cross for a
+verdict — so the shape of a run reads without any labels to parse.
+
 **A line of turns grows straight down.** Indentation means a fork, not depth, so a hundred-turn
 run reads as one column rather than a staircase off the right edge, and each branch of a fork
 gets its own rail. Every node collapses, showing how many states it hides; subtrees are built
