@@ -60,9 +60,15 @@ the result against the full suite rather than the visible twelve, evaluate the f
 the reference's tests as the overlay:
 
 ```sh
-alaya eval <final-hash> --tests benchmarks/bija/reference/tests \
-  --command "uv run pytest -q" --timeout 1800
+mkdir -p /tmp/bija-overlay && cp -R benchmarks/bija/reference/tests /tmp/bija-overlay/
+alaya eval <final-hash> --tests /tmp/bija-overlay \
+  --command "uv run pytest -q --tb=no -p no:cacheprovider" --timeout 1800
 ```
+
+`--tests` copies the *contents* of the directory over the workspace, so the overlay has to
+contain a `tests/` directory rather than being one. Give `--command` a single command, not a
+pipeline: a shell pipeline reports the exit status of its last stage, so `… | tail -5` would
+record a pass no matter what the tests did.
 
 That is exactly the case `alaya eval` exists for: the hidden tests reach the workspace, the
 verdict is recorded as a leaf, and no state the agent could continue from ever contains them.
