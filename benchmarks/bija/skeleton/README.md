@@ -2,7 +2,10 @@
 
 `SPEC.md` is the complete, normative definition of Bija, a small imperative language. This
 repository has its build, its command line, and its test harness; the compiler itself is
-missing. Your task is to write it.
+missing. Your task is to write it — to implement the specification, not to satisfy the tests
+that happen to be here. The twelve programs in `tests/` are a sample; the work is judged by a
+much larger suite of the same shape, so a section of `SPEC.md` that no sample program touches
+still has to be right.
 
 ```sh
 uv run pytest          # the acceptance suite — currently all failing

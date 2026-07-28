@@ -47,12 +47,16 @@ cd reference-check && uv run pytest -q
 The skeleton is a project directory, so it seeds a trajectory directly:
 
 ```sh
-root=$(alaya root "Implement the Bija compiler described in SPEC.md so that the acceptance \
-suite passes. Only src/bija/ may change." benchmarks/bija/skeleton \
-  --image ghcr.io/astral-sh/uv:alpine3.23)
+root=$(alaya root "$(cat benchmarks/bija/TASK.txt)" benchmarks/bija/skeleton \
+  --image ghcr.io/astral-sh/uv:python3.12-alpine3.23)
 
 alaya resume "$root" --model dgx:gpt-oss-120b
 ```
+
+`TASK.txt` is the task statement, kept in the repository so every run is given the same one. It
+is worded deliberately: an earlier version asked for "the acceptance suite in tests/ to pass",
+which makes the twelve visible programs the target rather than the specification, and an agent
+that satisfies them has done a twelfth of the work while believing it is finished.
 
 The image carries `uv`, so the agent can run the suite itself between turns; every command it
 runs is snapshotted, so a branch can be taken from any point where it went wrong. To measure
