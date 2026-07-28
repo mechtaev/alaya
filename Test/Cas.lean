@@ -285,19 +285,39 @@ def materializeSuite : Suite := suite "cas.materialize" #[
     assertOk <| store.materialize root destination
     assertEqual "replaced" (← readSpec destination) (← readSpec (← sourceDir)),
 
-  test "verify falls back to a full write when the checkout was tampered with" do
+  test "a checkout into a directory that was removed writes the whole snapshot" do
+    let store ← assertOk <| Store.create ((← scratch) / "store")
+    let source := (← scratch) / "source"
+    writeSpec source #[("keep.txt", "same"), ("change.txt", "one")]
+    let v1 ← assertOk <| store.snapshot source
+    writeSpec source #[("change.txt", "two")]
+    let v2 ← assertOk <| store.snapshot source
+    let destination := (← scratch) / "out"
+    assertOk <| store.materialize v1 destination
+    -- The store now has a record for this path. Removing the directory behind its back and
+    -- checking out another state must not leave only the paths that differ between them.
+    IO.FS.removeDirAll destination
+    assertOk <| store.materialize v2 destination
+    assertEqual "whole snapshot" (← readSpec destination)
+      #[("change.txt", "two"), ("keep.txt", "same")],
+
+  test "a tampered checkout is repaired by default, and trusted only when asked" do
     let store ← withStore
     let v1 ← snapshotSpec store baseSpec
     let destination := (← scratch) / "out"
     assertOk <| store.materialize v1 destination
     IO.FS.writeFile (destination / "shared" / "s.txt") "tampered"
-    -- Without verify, the tampered file sits at an unchanged path, so trust leaves it alone.
+    -- `verify` is on by default: the destination is re-captured, the record no longer matches,
+    -- and the snapshot is written in full.
     assertOk <| store.materialize v1 destination
-    assertEqual "trusted checkout untouched"
-      (← IO.FS.readFile (destination / "shared" / "s.txt")) "tampered"
-    assertOk <| store.materialize v1 destination { verify := true }
     assertEqual "verified checkout repaired"
-      (← IO.FS.readFile (destination / "shared" / "s.txt")) "content-s",
+      (← IO.FS.readFile (destination / "shared" / "s.txt")) "content-s"
+    IO.FS.writeFile (destination / "shared" / "s.txt") "tampered"
+    -- Turning it off is the opt-out for a destination known to be untouched: the tampered file
+    -- sits at a path the diff does not mention, so trust leaves it alone.
+    assertOk <| store.materialize v1 destination { verify := false }
+    assertEqual "trusted checkout untouched"
+      (← IO.FS.readFile (destination / "shared" / "s.txt")) "tampered",
 
   test "a collected previous tree falls back to a full write" do
     let store ← withStore

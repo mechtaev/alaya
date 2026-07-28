@@ -59,12 +59,17 @@ inductive OnExisting where
 
 structure MaterializeConfig where
   /-- Diff against the destination's recorded checkout and only touch changed paths. Falls
-  back to a full write when there is no usable record. Assumes the destination has not been
-  modified since the recorded checkout; enable `verify` when that is not guaranteed. -/
+  back to a full write when there is no usable record. -/
   incremental : Bool := true
-  /-- Before an incremental apply, re-capture the destination and fall back to a full write
-  unless it still matches its record exactly. -/
-  verify : Bool := false
+  /-- Re-capture the destination before an incremental apply, and fall back to a full write
+  unless it still matches its record exactly.
+
+  On by default because the record goes stale the moment anything else writes to the
+  destination — an agent's own commands, a test overlay, a `rm -rf` and a fresh checkout of a
+  different state — and an incremental apply against a stale record silently leaves a
+  destination that is not the snapshot it claims to be. Turn it off only where the destination
+  is known to be untouched since the last materialize. -/
+  verify : Bool := true
   linkMode : LinkMode := .copy
   onExisting : OnExisting := .replace
 

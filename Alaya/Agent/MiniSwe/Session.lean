@@ -381,14 +381,13 @@ def advance (rt : Runtime) (modelSpec : String) (parent : Hash) (dialogue : Dial
 
 /-- Materializes `state`'s workspace into `rt.workDir`, replacing whatever is there.
 
-`verify` is what makes this sound. The work directory is modified after every checkout — by the
-commands of the run, and by the overlay an evaluation applies — while the store's record of it
-still names the hash that was checked out. Without re-capturing the directory first, an
-incremental materialize would trust that record and leave everything those writes added: a fork
-would start from the abandoned branch's files, and a turn after an evaluation would start from
-the hidden tests. -/
+The work directory is modified after every checkout — by the commands of the run, and by the
+overlay an evaluation applies — so `MaterializeConfig.verify`, on by default, is what keeps this
+sound: without re-capturing the directory first, an incremental materialize would trust a stale
+record and leave everything those writes added, so a fork would start from the abandoned
+branch's files and a turn after an evaluation would start from the hidden tests. -/
 private def checkoutInto (rt : Runtime) (env : Hash) : Result Unit :=
-  rt.store.materialize env rt.workDir { onExisting := .replace, verify := true }
+  rt.store.materialize env rt.workDir { onExisting := .replace }
 
 /-- Advances exactly one model turn from `hash`, returning the new child state. -/
 def stepOnce (rt : Runtime) (modelSpec : String) (hash : Hash) : Result Hash := do
