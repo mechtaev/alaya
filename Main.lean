@@ -220,7 +220,10 @@ private def dispatch (argv : List String) : Result Unit := do
   | "html" :: rest =>
     let data ← openData args
     let out : System.FilePath := rest.head?.getD (data.path / "report.html").toString
-    let page ← Html.report data.store s!"alaya {data.path}"
+    -- Repeatable, and each may list several: --hide .venv --hide __pycache__,.pytest_cache
+    let hidden := (args.all "hide").foldl (init := #[]) fun paths value =>
+      paths ++ (value.splitOn ",").toArray.filter (!·.isEmpty)
+    let page ← Html.report data.store s!"alaya {data.path}" hidden
     Result.fromIO Error.storage (IO.FS.writeFile out page)
     emit s!"wrote {out} ({page.length} bytes)"
   | ["tree"] =>
@@ -240,7 +243,7 @@ private def dispatch (argv : List String) : Result Unit := do
     throw <| .configuration <|
       "usage: alaya (root TASK (PROJECT | --path P --image I) | resume HASH --model P:M | step HASH --model P:M | " ++
       "eval HASH --command C | commit HASH DIR [-m NOTE] | checkout HASH DIR | tree | " ++
-      "html [FILE] | " ++
+      "html [FILE] [--hide DIR] | " ++
       "show HASH | diff A B | rm HASH) " ++
       "[--data D] [--temperature T] [--url U] [--port N] [--image IMAGE] [--network N] " ++
       "[--base-commit SHA] [--tests DIR | --test-patch FILE | --tests-from-image PATH] " ++

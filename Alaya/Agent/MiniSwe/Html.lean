@@ -31,6 +31,20 @@ private def contentLimit : Nat := 60000
 /-- Most changed paths listed for one state. -/
 private def changeLimit : Nat := 300
 
+/-- Whether `path` lies under one of the folded prefixes, and which. A trailing slash is
+optional, and the directory's own entry counts as being under it. -/
+private def foldedUnder? (hidden : Array String) (path : String) : Option String :=
+  hidden.find? fun prefix' => path == prefix' || path.startsWith (prefix' ++ "/")
+
+/-- Counts of what changed under one folded prefix. -/
+private structure Fold where
+  added : Nat := 0
+  removed : Nat := 0
+  modified : Nat := 0
+  deriving Inhabited
+
+private def Fold.total (fold : Fold) : Nat := fold.added + fold.removed + fold.modified
+
 private def jsonText? (bytes? : Option ByteArray) : Option String :=
   match bytes? with
   | none => none
@@ -77,7 +91,8 @@ private def messageJson (message : Chat.Message) : Lean.Json :=
   | .tool _ content => .mkObj [("role", "tool"),
       ("content", match content with | .str text => text | other => other.compress)]
 
-private def stateJson (store : Store) (hash : Hash) : Result Lean.Json := do
+private def stateJson (store : Store) (hidden : Array String) (hash : Hash) :
+    Result Lean.Json := do
   let state ← Session.getState store hash
   let parentEnv? ← match state.parent? with
     | some parent => pure (some (← Session.getState store parent).env)
@@ -85,7 +100,27 @@ private def stateJson (store : Store) (hash : Hash) : Result Lean.Json := do
   let changes ← match parentEnv? with
     | none => pure #[]
     | some before => store.diff before state.env
-  let shown := changes.extract 0 changeLimit
+  -- Folded prefixes are counted, never listed: a run that rebuilds a virtual environment
+  -- changes hundreds of paths that say nothing, and they would otherwise crowd out the ones
+  -- that do — the listing limit applies to what is left after folding.
+  let mut folds : Std.HashMap String Fold := {}
+  let mut listed : Array Change := #[]
+  for change in changes do
+    match foldedUnder? hidden change.path with
+    | none => listed := listed.push change
+    | some prefix' =>
+      let fold := folds.getD prefix' {}
+      folds := folds.insert prefix' <| match change with
+        | .added .. => { fold with added := fold.added + 1 }
+        | .removed .. => { fold with removed := fold.removed + 1 }
+        | .modified .. => { fold with modified := fold.modified + 1 }
+  let foldedJson := hidden.filterMap fun prefix' =>
+    folds.get? prefix' |>.map fun fold =>
+      Lean.Json.mkObj [
+        ("prefix", prefix'), ("added", (fold.added : Lean.Json)),
+        ("removed", (fold.removed : Lean.Json)), ("modified", (fold.modified : Lean.Json)),
+        ("total", (fold.total : Lean.Json))]
+  let shown := listed.extract 0 changeLimit
   let changesJson ← shown.mapM (changeJson store parentEnv? (some state.env))
   let evaluation := match state.evaluation? with
     | none => Lean.Json.null
@@ -112,6 +147,8 @@ private def stateJson (store : Store) (hash : Hash) : Result Lean.Json := do
         ("returncode", (command.returncode : Lean.Json))])),
     ("messages", .arr (state.appended.map messageJson)),
     ("changes", .arr changesJson),
+    ("folded", .arr foldedJson),
+    ("listedCount", (listed.size : Lean.Json)),
     ("changeCount", (changes.size : Lean.Json))]
 
 private def styles : String :=
@@ -189,7 +226,8 @@ border-radius:3px;cursor:pointer;color:#444}
 .diff .plus{background:#e6f6ea}.diff .minus{background:#fdeaea}.diff .gap{background:#f5f5f5;
 color:#999;text-align:center}
 .muted{color:#888}
-.big{color:#888;font-style:italic;padding:6px 9px}"
+.big{color:#888;font-style:italic;padding:6px 9px}
+.file.folded{padding:5px 9px;background:#f7f8fa;color:#777}"
 
 private def script : String :=
 "const data = JSON.parse(document.getElementById('data').textContent);
@@ -513,7 +551,11 @@ function section(parent, title) {
 
 function renderChanges(parent, state) {
   const box = section(parent, 'Workspace changes (' + state.changeCount + ')');
-  if (!state.changes.length) { box.append(el('div', 'muted', 'none')); return; }
+  const folded = state.folded || [];
+  if (!state.changes.length && !folded.length) {
+    box.append(el('div', 'muted', 'none'));
+    return;
+  }
   for (const change of state.changes) {
     const file = el('details', 'file');
     const head = el('summary');
@@ -534,9 +576,19 @@ function renderChanges(parent, state) {
     }
     box.append(file);
   }
-  if (state.changeCount > state.changes.length)
-    box.append(el('div', 'muted',
-      (state.changeCount - state.changes.length) + ' further paths not listed'));
+  const listed = state.listedCount === undefined ? state.changes.length : state.listedCount;
+  if (listed > state.changes.length)
+    box.append(el('div', 'muted', (listed - state.changes.length) + ' further paths not listed'));
+  for (const fold of folded) {
+    const parts = [];
+    if (fold.added) parts.push('+' + fold.added);
+    if (fold.removed) parts.push('\u2212' + fold.removed);
+    if (fold.modified) parts.push('~' + fold.modified);
+    const row = el('div', 'file folded');
+    row.append(el('span', 'tag', '\u2261'), el('span', 'path', fold.prefix + '/'),
+      el('span', 'stat', fold.total + ' paths  ' + parts.join(' ')));
+    box.append(row);
+  }
 }
 
 /** A tool observation is mini's JSON envelope; show its fields, not its escaping. */
@@ -651,10 +703,14 @@ wireTools();
 const wanted = data.states.find(s => short(s.hash) === location.hash.slice(1));
 select((wanted || childrenOf('')[0] || data.states[0]).hash);"
 
-/-- Renders every state in the store as one standalone page. -/
-def report (store : Store) (title : String) : Result String := do
+/-- Renders every state in the store as one standalone page. Paths under `hidden` are counted
+rather than listed, so a directory that changes constantly and means nothing — a virtual
+environment, a bytecode cache — is reported without burying the rest. -/
+def report (store : Store) (title : String) (hidden : Array String := #[]) : Result String := do
+  let hidden := hidden.map fun prefix' =>
+    if prefix'.endsWith "/" then (prefix'.dropEnd 1).toString else prefix'
   let hashes ← Session.allStates store
-  let states ← hashes.mapM (stateJson store)
+  let states ← hashes.mapM (stateJson store hidden)
   let json := (Lean.Json.mkObj [("states", .arr states)]).compress
   -- `</` cannot appear inside a script element; the JSON parser does not mind the escape.
   let safe := json.replace "</" "<\\/"

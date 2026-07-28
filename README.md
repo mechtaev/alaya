@@ -202,7 +202,14 @@ assets — defaulting to `D/report.html`:
 
 ```sh
 alaya html && open .alaya/report.html
+alaya html --hide .venv --hide __pycache__      # count those, do not list them
 ```
+
+`--hide` is repeatable and each value may list several prefixes, comma separated. A path under
+one of them is counted rather than listed: the state still reports that the directory changed,
+as one line saying how many paths were added, removed and modified, and the listing limit then
+applies to what is left — so hiding a virtual environment reveals the paths it was crowding out
+rather than merely shortening the page.
 
 The tree is on the left and the selected state fills the rest: its metadata, the messages that
 turn appended (assistant text, the commands it ran, and each observation with its return code),
