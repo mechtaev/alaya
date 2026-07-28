@@ -168,10 +168,23 @@ alaya eval 4925c0cf514f --tests /tmp/bija-overlay \
 **The timeouts are gone: 0 this run, against 3 in run 1**, and `python - <<'PY'` works where it
 returned 127 before. The run was shorter — 15 turns to submission rather than 19.
 
-**The submitted state scores 0 of 464.** Its last act was a heredoc rewrite of `src/bija/cli.py`
-that returned `rc=1`, leaving a file with an `IndentationError`; the agent submitted anyway,
-without running the suite again. The verdict node `e8824232270c` records `fail 1` in 12.8 s —
-fast, because nothing imports.
+**The submitted state scores 0 of 464**, and the agent knew. Its last command wrote
+`src/bija/cli.py` from a heredoc *and ran the suite in the same invocation*, so the `rc=1` on
+that turn is pytest's: it had minified its own implementation to fit the write, produced a file
+with an `IndentationError`, and received the full failure list — 24 of 24, with the import error
+in the tracebacks. Its next turn reads:
+
+> I've hit a syntax issue from compressing the code too aggressively. I can't reliably finish by
+> incremental patching in this state, so I'm stopping here rather than risk more damage.
+
+and then emits `COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT`. **It was giving up, not claiming
+success** — mini's protocol has exactly one terminal action, so an agent that decides to stop
+has no way to say so except the submit sentinel, and the port records `Submitted` either way.
+The verdict node `e8824232270c` reads `fail 1` in 12.8 s, fast because nothing imports.
+
+That is a faithful port of mini's behaviour, but it means `Outcome.status` must not be read as a
+claim about the work: a run that ends in `Submitted` may have been abandoned deliberately. Only
+an evaluation says anything about the result.
 
 Because every turn is a state, the run is still measurable. `4925c0cf514f`, the last state whose
 `cli.py` parses, is the best result recorded so far:
@@ -193,9 +206,9 @@ standalone tests. The requirement says the generated file must produce the same 
 bare interpreter, and by the letter it does. Worth tightening in the specification if this
 benchmark is used in anger: a build must not run the program.
 
-The second is that a run can end at its worst state. Submission is the agent's own claim, and
-nothing checks it — grading only the submitted state scored this run at zero while a state four
-turns earlier scored 98.
+The second is that a run can end at its worst state. Grading only the submitted state scored
+this run at zero while a state four turns earlier scored 98 — and here the final state was not
+even an attempt at an answer, but the wreckage the agent stopped in front of.
 
 ### Notes on running it
 
