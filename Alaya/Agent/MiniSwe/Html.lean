@@ -120,16 +120,32 @@ body{margin:0;font:13px/1.5 -apple-system,BlinkMacSystemFont,'Segoe UI',system-u
 color:#1a1a1a;background:#fff}
 code,pre,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12px}
 #layout{display:flex;height:100vh}
-#tree{width:420px;min-width:260px;max-width:60vw;overflow:auto;border-right:1px solid #ddd;
-padding:10px 8px;background:#fafafa;resize:horizontal}
+#side{width:440px;min-width:280px;max-width:65vw;display:flex;flex-direction:column;
+border-right:1px solid #ddd;background:#fafafa;resize:horizontal;overflow:hidden}
+#tools{display:flex;gap:5px;padding:8px;border-bottom:1px solid #e6e6e6;background:#f2f3f5}
+#find{flex:1;min-width:0;padding:3px 7px;border:1px solid #ccc;border-radius:3px;font:inherit}
+#found{align-self:center;font-size:11px;color:#777;white-space:nowrap}
+button.tool{font-size:11px;padding:2px 8px;border:1px solid #ccc;background:#fff;
+border-radius:3px;cursor:pointer;color:#444;white-space:nowrap}
+button.tool:hover{background:#eef1f5}
+#tree{flex:1;overflow:auto;padding:8px 8px 40vh}
 #detail{flex:1;overflow:auto;padding:18px 22px}
 h1{font-size:14px;margin:0 0 10px;letter-spacing:.02em;text-transform:uppercase;color:#666}
 h2{font-size:13px;margin:22px 0 8px;text-transform:uppercase;letter-spacing:.03em;color:#666;
 border-bottom:1px solid #eee;padding-bottom:4px}
-.node{display:block;width:100%;text-align:left;border:0;background:none;padding:3px 6px;
-border-radius:4px;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+/* A chain grows straight down: only a fork indents, and each branch of a fork gets a rail. */
+.branch{border-left:1px solid #ccd2d9;margin-left:8px;padding-left:10px}
+.hide{display:none}
+.node{display:flex;align-items:baseline;width:100%;text-align:left;border:0;background:none;
+padding:2px 5px;border-radius:4px;cursor:pointer;font:inherit;color:inherit}
 .node:hover{background:#eef1f5}
 .node.on{background:#dce7f5;font-weight:600}
+.node.hit{outline:1px solid #c8a02a;background:#fdf6e0}
+.tw{flex:none;width:13px;text-align:center;color:#8a94a0;cursor:pointer;user-select:none;
+font-size:10px}
+.tw:hover{color:#333}
+.sum{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.count{flex:none;color:#8a94a0;font-size:11px;margin-left:6px}
 .hash{color:#8a6d3b}
 .kind{display:inline-block;min-width:52px;padding:0 5px;margin-right:6px;border-radius:3px;
 font-size:10px;text-transform:uppercase;letter-spacing:.04em;text-align:center;color:#fff}
@@ -187,33 +203,200 @@ function summary(state) {
   return c ? c.command.replace(/\\s+/g, ' ') : '(no command)';
 }
 
-function buildTree() {
-  const kids = new Map();
-  for (const s of data.states) {
-    const key = s.parent || '';
-    if (!kids.has(key)) kids.set(key, []);
-    kids.get(key).push(s);
+/* --- the tree ---------------------------------------------------------
+   A state's children are drawn below it, at the same indentation, for as long as the line does
+   not branch: a run of a hundred turns reads as one column instead of a staircase off the right
+   edge. A fork indents, one railed branch per child. Subtrees are built the first time they are
+   opened and kept afterwards, so the page opens at the same speed whatever the forest weighs. */
+
+const kids = new Map();
+for (const s of data.states) {
+  const key = s.parent || '';
+  if (!kids.has(key)) kids.set(key, []);
+  kids.get(key).push(s);
+}
+const childrenOf = hash => kids.get(hash) || [];
+
+/** Number of states at or below `hash`, for the count on a collapsed node. */
+const sizes = new Map();
+function subtreeSize(hash) {
+  if (sizes.has(hash)) return sizes.get(hash);
+  let total = 1;
+  for (const child of childrenOf(hash)) total += subtreeSize(child.hash);
+  sizes.set(hash, total);
+  return total;
+}
+
+const nodes = new Map();     // hash -> {row, rest, twisty, built, open}
+const ROWS_AT_ONCE = 300;    // how much of a chain one expansion follows
+const ROWS_AT_START = 300;   // how much of the forest is open when the page loads
+
+function rowFor(state) {
+  const row = el('div', 'node');
+  row.dataset.hash = state.hash;
+  const twisty = el('span', 'tw', childrenOf(state.hash).length ? '\\u25be' : '\\u00b7');
+  const kind = el('span', 'kind k-' + state.kind,
+    state.kind === 'format_error' ? 'error' : state.kind === 'intervention' ? 'commit' :
+    state.kind === 'evaluation' ? 'eval' : state.kind);
+  const text = el('span', 'sum');
+  text.append(el('span', 'hash', short(state.hash) + ' '), document.createTextNode(summary(state)));
+  row.append(twisty, kind, text);
+  const commands = state.commands || [];
+  const rc = commands.length ? commands[commands.length - 1].returncode : null;
+  if (rc !== null && rc !== 0) row.append(el('span', 'chip bad', 'rc ' + rc));
+  if (state.outcome) row.append(el('span', 'chip', state.outcome.status));
+  if (state.evaluation) row.append(el('span', 'chip ' + (state.evaluation.passed ? 'ok' : 'bad'),
+    state.evaluation.passed ? 'pass' : 'fail'));
+  const count = el('span', 'count');
+  row.append(count);
+  row.onclick = () => select(state.hash);
+  twisty.onclick = event => { event.stopPropagation(); toggle(state.hash); };
+  return { row, twisty, count };
+}
+
+/** Places one state's row, and an empty holder for everything below it. */
+function place(hash, container) {
+  const { row, twisty, count } = rowFor(byHash.get(hash));
+  const rest = el('div', 'rest');
+  container.append(row, rest);
+  const entry = { row, rest, twisty, count, built: false, open: false };
+  nodes.set(hash, entry);
+  return entry;
+}
+
+function mark(hash) {
+  const entry = nodes.get(hash);
+  const children = childrenOf(hash);
+  if (!children.length) { entry.twisty.textContent = '\\u00b7'; entry.count.textContent = '';
+    return; }
+  entry.twisty.textContent = entry.open ? '\\u25be' : '\\u25b8';
+  entry.count.textContent = entry.open ? '' : '+' + (subtreeSize(hash) - 1);
+}
+
+/** Opens `hash`, following a straight line down until it forks or the budget runs out. */
+function open(hash, budget = ROWS_AT_ONCE) {
+  let current = hash;
+  while (current) {
+    const entry = nodes.get(current);
+    const children = childrenOf(current);
+    entry.open = true;
+    entry.rest.classList.remove('hide');
+    if (!entry.built) {
+      entry.built = true;
+      if (children.length === 1) {
+        place(children[0].hash, entry.rest);
+      } else if (children.length > 1) {
+        const forks = el('div', 'forks');
+        entry.rest.append(forks);
+        for (const child of children) {
+          const branch = el('div', 'branch');
+          forks.append(branch);
+          place(child.hash, branch);
+          mark(child.hash);
+        }
+      }
+    }
+    mark(current);
+    if (children.length !== 1 || --budget <= 0) break;
+    current = children[0].hash;   // same indentation: the line has not branched
   }
+}
+
+function close(hash) {
+  const entry = nodes.get(hash);
+  entry.open = false;
+  entry.rest.classList.add('hide');
+  mark(hash);
+}
+
+function toggle(hash) {
+  const entry = nodes.get(hash);
+  entry.open ? close(hash) : open(hash);
+}
+
+/** Opens every ancestor of `hash`, so a selection is always visible. */
+function reveal(hash) {
+  const path = [];
+  for (let at = byHash.get(hash); at && at.parent; at = byHash.get(at.parent)) path.push(at.parent);
+  for (const ancestor of path.reverse()) {
+    if (!nodes.has(ancestor)) continue;
+    const entry = nodes.get(ancestor);
+    if (!entry.open || !entry.built) open(ancestor, 1);
+  }
+}
+
+/** Opens outward from what is already placed until `limit` rows exist, so a forest that forks
+early still shows a screenful, and one that forks a thousand times does not build all of it. */
+function seed(limit) {
+  for (let grew = true; grew && nodes.size < limit;) {
+    grew = false;
+    for (const [hash, entry] of [...nodes]) {
+      if (nodes.size >= limit) break;
+      if (!entry.built) { open(hash, limit - nodes.size); grew = true; }
+    }
+  }
+}
+
+function buildTree() {
   const box = document.getElementById('tree');
-  const walk = (hash, depth) => {
-    for (const s of kids.get(hash) || []) {
-      const b = el('button', 'node');
-      b.style.paddingLeft = (6 + depth * 14) + 'px';
-      b.dataset.hash = s.hash;
-      const k = el('span', 'kind k-' + s.kind, s.kind === 'format_error' ? 'error' :
-        s.kind === 'intervention' ? 'commit' : s.kind === 'evaluation' ? 'eval' : s.kind);
-      b.append(k, el('span', 'hash', short(s.hash) + ' '), document.createTextNode(summary(s)));
-      const rc = (s.commands || []).length ? s.commands[s.commands.length - 1].returncode : null;
-      if (rc !== null && rc !== 0) b.append(el('span', 'chip bad', 'rc ' + rc));
-      if (s.outcome) b.append(el('span', 'chip', s.outcome.status));
-      if (s.evaluation) b.append(el('span', 'chip ' + (s.evaluation.passed ? 'ok' : 'bad'),
-        s.evaluation.passed ? 'pass' : 'fail'));
-      b.onclick = () => select(s.hash);
-      box.append(b);
-      walk(s.hash, depth + 1);
+  box.textContent = '';
+  nodes.clear();
+  for (const root of childrenOf('')) {
+    const branch = el('div', 'branch');
+    box.append(branch);
+    place(root.hash, branch);
+    open(root.hash);
+  }
+  seed(ROWS_AT_START);
+}
+
+/* --- search ----------------------------------------------------------- */
+
+let hits = [], hitAt = -1;
+
+function matchesOf(query) {
+  const needle = query.toLowerCase();
+  return data.states.filter(s =>
+    (short(s.hash) + ' ' + s.kind + ' ' + summary(s) + ' ' + (s.note || ''))
+      .toLowerCase().includes(needle));
+}
+
+function search(query, step) {
+  const found = document.getElementById('found');
+  for (const entry of nodes.values()) entry.row.classList.remove('hit');
+  if (!query) { hits = []; hitAt = -1; found.textContent = ''; return; }
+  const fresh = matchesOf(query).map(s => s.hash);
+  if (fresh.join() !== hits.join()) { hits = fresh; hitAt = -1; }
+  if (!hits.length) { found.textContent = '0'; return; }
+  hitAt = (hitAt + (step || 1) + hits.length) % hits.length;
+  const hash = hits[hitAt];
+  found.textContent = (hitAt + 1) + '/' + hits.length;
+  reveal(hash);
+  select(hash);
+  nodes.get(hash).row.classList.add('hit');
+}
+
+function wireTools() {
+  const find = document.getElementById('find');
+  find.oninput = () => { hitAt = -1; search(find.value, 0); };
+  find.onkeydown = event => {
+    if (event.key === 'Enter') { event.preventDefault(); search(find.value, event.shiftKey ? -1 : 1); }
+  };
+  // Placing a node creates entries for its children, so sweeping until nothing new appears
+  // builds the whole forest however deep it is.
+  document.getElementById('expand').onclick = () => {
+    for (let grew = true; grew;) {
+      grew = false;
+      for (const s of data.states) {
+        const entry = nodes.get(s.hash);
+        if (entry && !(entry.built && entry.open)) { open(s.hash, 1); grew = true; }
+      }
     }
   };
-  walk('', 0);
+  // Only a row's descendants live inside its holder, so closing everything leaves the roots.
+  document.getElementById('collapse').onclick = () => {
+    for (const hash of [...nodes.keys()]) close(hash);
+  };
 }
 
 /** Wraps a node so anything tall collapses to a clip with a toggle. */
@@ -359,11 +542,28 @@ function renderEvaluation(parent, state) {
   box.append(meta, foldable(el('pre', null, e.output), e.output.split('\\n').length + ' lines'));
 }
 
+/** The hashes currently on screen, top to bottom, for keyboard movement. */
+function visibleOrder() {
+  const order = [];
+  const walk = hash => {
+    order.push(hash);
+    const entry = nodes.get(hash);
+    if (!entry || !entry.open) return;
+    for (const child of childrenOf(hash)) if (nodes.has(child.hash)) walk(child.hash);
+  };
+  for (const root of childrenOf('')) if (nodes.has(root.hash)) walk(root.hash);
+  return order;
+}
+
+let selected = null;
+
 function select(hash) {
   const state = byHash.get(hash);
   location.hash = short(hash);
-  for (const node of document.querySelectorAll('.node'))
-    node.classList.toggle('on', node.dataset.hash === hash);
+  reveal(hash);
+  if (selected && nodes.has(selected)) nodes.get(selected).row.classList.remove('on');
+  selected = hash;
+  if (nodes.has(hash)) nodes.get(hash).row.classList.add('on');
   const detail = document.getElementById('detail');
   detail.textContent = '';
   detail.append(el('h1', null, state.kind + '  ' + short(hash)));
@@ -387,9 +587,20 @@ function select(hash) {
   detail.scrollTop = 0;
 }
 
+document.onkeydown = event => {
+  if (event.target.tagName === 'INPUT' || !selected) return;
+  if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;
+  event.preventDefault();
+  const order = visibleOrder();
+  const at = order.indexOf(selected);
+  const next = order[at + (event.key === 'ArrowDown' ? 1 : -1)];
+  if (next) { select(next); nodes.get(next).row.scrollIntoView({block: 'nearest'}); }
+};
+
 buildTree();
+wireTools();
 const wanted = data.states.find(s => short(s.hash) === location.hash.slice(1));
-select((wanted || data.states[0]).hash);"
+select((wanted || childrenOf('')[0] || data.states[0]).hash);"
 
 /-- Renders every state in the store as one standalone page. -/
 def report (store : Store) (title : String) : Result String := do
@@ -402,7 +613,12 @@ def report (store : Store) (title : String) : Result String := do
     "<!doctype html>\n<html lang=\"en\"><head><meta charset=\"utf-8\">\n" ++
     "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\n" ++
     "<title>" ++ title ++ "</title>\n<style>\n" ++ styles ++ "\n</style></head>\n<body>\n" ++
-    "<div id=\"layout\"><div id=\"tree\"></div><div id=\"detail\"></div></div>\n" ++
+    "<div id=\"layout\"><div id=\"side\"><div id=\"tools\">" ++
+    "<input id=\"find\" placeholder=\"find (enter for next)\" spellcheck=\"false\">" ++
+    "<span id=\"found\"></span>" ++
+    "<button class=\"tool\" id=\"expand\">expand</button>" ++
+    "<button class=\"tool\" id=\"collapse\">collapse</button></div>" ++
+    "<div id=\"tree\"></div></div><div id=\"detail\"></div></div>\n" ++
     "<script id=\"data\" type=\"application/json\">" ++ safe ++ "</script>\n" ++
     "<script>\n" ++ script ++ "\n</script>\n</body></html>\n"
 

@@ -206,8 +206,17 @@ alaya html && open .alaya/report.html
 
 The tree is on the left and the selected state fills the rest: its metadata, the messages that
 turn appended (assistant text, the commands it ran, and each observation with its return code),
-the workspace changes it made as a line diff, and any verdict recorded against it. Long output
-is clipped with a toggle, and files are collapsed until opened. Text is carried into the diff
+the workspace changes it made as a line diff, and any verdict recorded against it.
+
+**A line of turns grows straight down.** Indentation means a fork, not depth, so a hundred-turn
+run reads as one column rather than a staircase off the right edge, and each branch of a fork
+gets its own rail. Every node collapses, showing how many states it hides; subtrees are built
+the first time they are opened, so the page opens at the same speed whatever the forest weighs —
+a 5 000-state forest renders its first 300 rows in milliseconds and expands in full on request.
+There is a find box (enter for the next match, shift-enter for the previous), expand and
+collapse buttons, and arrow keys to walk the visible rows.
+
+Long output is clipped with a toggle, and files are collapsed until opened. Text is carried into the diff
 only when it is small and textual and not under a generated directory such as `.venv/`, so a
 report stays a readable size; those paths are still listed, just not diffed.
 
