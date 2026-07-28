@@ -216,9 +216,8 @@ verdict — so the shape of a run reads without any labels to parse.
 one child keeps it at the same level, while a state with two or more puts every one of them a
 level deeper behind a rail. A hundred-turn run is therefore one column rather than a staircase
 off the right edge, and a line on the left always marks a set of siblings. The state that starts
-each branch is marked twice — an elbow from the rail into its row, and a `1/2` badge saying
-which way it is — so a sibling that appears fifty rows below its fork cannot be misread as one
-more turn of the branch above it. Every node collapses, showing how many states it hides; subtrees are built
+each branch carries an elbow from the rail into its row, so a sibling appearing fifty rows below
+its fork cannot be misread as one more turn of the branch above it. Every node collapses, showing how many states it hides; subtrees are built
 the first time they are opened, so the page opens at the same speed whatever the forest weighs —
 a 5 000-state forest renders its first 300 rows in milliseconds and expands in full on request.
 There is a find box (enter for the next match, shift-enter for the previous), expand and

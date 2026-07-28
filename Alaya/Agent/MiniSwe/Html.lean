@@ -137,13 +137,10 @@ border-bottom:1px solid #eee;padding-bottom:4px}
    and only a fork draws a rail, so a line on the left always marks a set of siblings. */
 .branch{border-left:2px solid #c3cbd4;margin-left:9px;padding-left:13px}
 .forks{margin-top:2px}
-.forks>.branch+.branch{margin-top:6px}
 /* An elbow from the rail into the row that starts a branch, so the first state of a sibling
    cannot be mistaken for one more row of the branch above it. */
 .branch>.node:first-child::before{content:'';position:absolute;left:-13px;top:11px;width:11px;
 border-top:2px solid #c3cbd4}
-.br{flex:none;margin-right:5px;padding:0 4px;border-radius:3px;background:#dde3ea;color:#4a5560;
-font-size:10px;font-family:ui-monospace,monospace}
 .hide{display:none}
 .node{position:relative;display:flex;align-items:baseline;width:100%;text-align:left;border:0;
 background:none;padding:2px 5px;border-radius:4px;cursor:pointer;font:inherit;color:inherit}
@@ -283,7 +280,7 @@ function twistyMarkup(which) {
     TWISTIES[which] + '</svg>';
 }
 
-function rowFor(state, sibling) {
+function rowFor(state) {
   const row = el('div', 'node');
   row.dataset.hash = state.hash;
   const leaf = !childrenOf(state.hash).length;
@@ -291,14 +288,7 @@ function rowFor(state, sibling) {
   twisty.innerHTML = twistyMarkup(leaf ? 'leaf' : 'open');
   const text = el('span', 'sum');
   text.append(el('span', 'hash', short(state.hash) + ' '), document.createTextNode(summary(state)));
-  row.append(twisty);
-  // Which way this is, out of the ways the parent forked.
-  if (sibling) {
-    const badge = el('span', 'br', (sibling.index + 1) + '/' + sibling.total);
-    badge.title = 'branch ' + (sibling.index + 1) + ' of ' + sibling.total;
-    row.append(badge);
-  }
-  row.append(icon(state), text);
+  row.append(twisty, icon(state), text);
   const commands = state.commands || [];
   const rc = commands.length ? commands[commands.length - 1].returncode : null;
   if (rc !== null && rc !== 0) row.append(el('span', 'chip bad', 'rc ' + rc));
@@ -310,10 +300,10 @@ function rowFor(state, sibling) {
   return { row, twisty, count };
 }
 
-/** Places one state's row, and an empty holder for everything below it. `sibling` is set when
-the row starts one branch of a fork, which is what the elbow and the badge mark. */
-function place(hash, container, sibling) {
-  const { row, twisty, count } = rowFor(byHash.get(hash), sibling);
+/** Places one state's row, and an empty holder for everything below it. A row that starts a
+branch is the first in its container, which is what the elbow marks. */
+function place(hash, container) {
+  const { row, twisty, count } = rowFor(byHash.get(hash));
   const rest = el('div', 'rest');
   container.append(row, rest);
   const entry = { row, rest, twisty, count, built: false, open: false };
@@ -349,12 +339,12 @@ function open(hash, budget = ROWS_AT_ONCE) {
       } else if (children.length > 1) {        // two or more: every one of them a level deeper
         const forks = el('div', 'forks');
         entry.rest.append(forks);
-        children.forEach((child, index) => {
+        for (const child of children) {
           const branch = el('div', 'branch');
           forks.append(branch);
-          place(child.hash, branch, { index, total: children.length });
+          place(child.hash, branch);
           mark(child.hash);
-        });
+        }
       }
     }
     mark(current);
