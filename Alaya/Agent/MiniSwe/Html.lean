@@ -133,17 +133,20 @@ button.tool:hover{background:#eef1f5}
 h1{font-size:14px;margin:0 0 10px;letter-spacing:.02em;text-transform:uppercase;color:#666}
 h2{font-size:13px;margin:22px 0 8px;text-transform:uppercase;letter-spacing:.03em;color:#666;
 border-bottom:1px solid #eee;padding-bottom:4px}
-/* A chain grows straight down: only a fork indents, and each branch of a fork gets a rail. */
-.branch{border-left:1px solid #ccd2d9;margin-left:8px;padding-left:10px}
+/* A chain grows straight down at the same indentation; a fork is the only thing that indents,
+   and only a fork draws a rail, so a line on the left always marks a set of siblings. */
+.branch{border-left:2px solid #c3cbd4;margin-left:9px;padding-left:11px}
+.forks{margin-top:1px}
 .hide{display:none}
 .node{display:flex;align-items:baseline;width:100%;text-align:left;border:0;background:none;
 padding:2px 5px;border-radius:4px;cursor:pointer;font:inherit;color:inherit}
 .node:hover{background:#eef1f5}
 .node.on{background:#dce7f5;font-weight:600}
 .node.hit{outline:1px solid #c8a02a;background:#fdf6e0}
-.tw{flex:none;width:13px;text-align:center;color:#8a94a0;cursor:pointer;user-select:none;
-font-size:10px}
-.tw:hover{color:#333}
+.tw{flex:none;display:inline-flex;align-items:center;justify-content:center;width:16px;
+height:14px;color:#5a6570;cursor:pointer;user-select:none}
+.tw:hover{color:#000}
+.tw.leaf{color:#b3bcc5;cursor:default}
 .sum{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .count{flex:none;color:#8a94a0;font-size:11px;margin-left:6px}
 .hash{color:#8a6d3b}
@@ -260,10 +263,25 @@ function icon(state) {
   return holder;
 }
 
+/* Expanded, collapsed, and leaf, drawn rather than typed: a filled triangle is legible at this
+   size in a way that a text arrow is not. */
+const TWISTIES = {
+  open: '<path d=\"M3 5h8l-4 4.5z\" stroke=\"none\"/>',
+  closed: '<path d=\"M5 3v8l4.5-4z\" stroke=\"none\"/>',
+  leaf: '<circle cx=\"7\" cy=\"7\" r=\"1.6\" stroke=\"none\"/>'
+};
+
+function twistyMarkup(which) {
+  return '<svg viewBox=\"0 0 14 14\" width=\"12\" height=\"12\" fill=\"currentColor\">' +
+    TWISTIES[which] + '</svg>';
+}
+
 function rowFor(state) {
   const row = el('div', 'node');
   row.dataset.hash = state.hash;
-  const twisty = el('span', 'tw', childrenOf(state.hash).length ? '\\u25be' : '\\u00b7');
+  const leaf = !childrenOf(state.hash).length;
+  const twisty = el('span', 'tw' + (leaf ? ' leaf' : ''));
+  twisty.innerHTML = twistyMarkup(leaf ? 'leaf' : 'open');
   const text = el('span', 'sum');
   text.append(el('span', 'hash', short(state.hash) + ' '), document.createTextNode(summary(state)));
   row.append(twisty, icon(state), text);
@@ -291,9 +309,13 @@ function place(hash, container) {
 function mark(hash) {
   const entry = nodes.get(hash);
   const children = childrenOf(hash);
-  if (!children.length) { entry.twisty.textContent = '\\u00b7'; entry.count.textContent = '';
-    return; }
-  entry.twisty.textContent = entry.open ? '\\u25be' : '\\u25b8';
+  if (!children.length) {
+    entry.twisty.className = 'tw leaf';
+    entry.twisty.innerHTML = twistyMarkup('leaf');
+    entry.count.textContent = '';
+    return;
+  }
+  entry.twisty.innerHTML = twistyMarkup(entry.open ? 'open' : 'closed');
   entry.count.textContent = entry.open ? '' : '+' + (subtreeSize(hash) - 1);
 }
 
@@ -308,8 +330,8 @@ function open(hash, budget = ROWS_AT_ONCE) {
     if (!entry.built) {
       entry.built = true;
       if (children.length === 1) {
-        place(children[0].hash, entry.rest);
-      } else if (children.length > 1) {
+        place(children[0].hash, entry.rest);   // one child: same level, the line just continues
+      } else if (children.length > 1) {        // two or more: every one of them a level deeper
         const forks = el('div', 'forks');
         entry.rest.append(forks);
         for (const child of children) {
@@ -366,9 +388,7 @@ function buildTree() {
   box.textContent = '';
   nodes.clear();
   for (const root of childrenOf('')) {
-    const branch = el('div', 'branch');
-    box.append(branch);
-    place(root.hash, branch);
+    place(root.hash, box);   // a root starts flush: a rail would mean a fork that is not there
     open(root.hash);
   }
   seed(ROWS_AT_START);

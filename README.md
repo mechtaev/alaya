@@ -212,9 +212,10 @@ Each row carries a glyph for what the state is — a seed for a root, a prompt f
 a warning for a format error, a diamond for a hand-made commit, and a tick or a cross for a
 verdict — so the shape of a run reads without any labels to parse.
 
-**A line of turns grows straight down.** Indentation means a fork, not depth, so a hundred-turn
-run reads as one column rather than a staircase off the right edge, and each branch of a fork
-gets its own rail. Every node collapses, showing how many states it hides; subtrees are built
+**A line of turns grows straight down.** Indentation means a fork, and only a fork: a state with
+one child keeps it at the same level, while a state with two or more puts every one of them a
+level deeper behind a rail. A hundred-turn run is therefore one column rather than a staircase
+off the right edge, and a line on the left always marks a set of siblings. Every node collapses, showing how many states it hides; subtrees are built
 the first time they are opened, so the page opens at the same speed whatever the forest weighs —
 a 5 000-state forest renders its first 300 rows in milliseconds and expands in full on request.
 There is a find box (enter for the next match, shift-enter for the previous), expand and
