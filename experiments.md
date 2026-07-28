@@ -219,6 +219,65 @@ even an attempt at an answer, but the wreckage the agent stopped in front of.
   destination is re-captured before any incremental apply; turning it off is the opt-out for a
   destination known to be untouched.
 
+## 3. The same task with `yunwu:gpt-5.6-luna`
+
+**Question.** Runs 1 and 2 were a small model. What does the same benchmark look like with a
+larger one, everything else held fixed?
+
+**Setup.** As run 2 — same task, same image, temperature 0 — with `yunwu:gpt-5.6-luna`. The data
+directory was emptied first, so the forest holds only this run.
+
+```sh
+rm -rf .alaya
+root=$(alaya root "Implement the Bija compiler described in SPEC.md so that the acceptance \
+suite in tests/ passes. Only files under src/bija/ may be changed. Run 'uv run pytest' to \
+check your work." benchmarks/bija/skeleton --image ghcr.io/astral-sh/uv:python3.12-alpine3.23)
+
+alaya resume "$root" --model yunwu:gpt-5.6-luna
+
+alaya eval 7e07884fae12 --tests /tmp/bija-overlay \
+  --command "uv run pytest -q --tb=no -p no:cacheprovider" --timeout 1800
+```
+
+### Result
+
+16 turns, no timeouts, one format error, and a final message that reads *"The acceptance suite
+has passed."* — which was **true of the twelve programs it could see**: all 24 of the skeleton's
+tests pass. Against the 232 it could not see, the verdict node `563ce9060a19` reads `fail 1`.
+
+| Suite                                 | run 1  | run 2 (best state) | run 3   |
+| ------------------------------------- | -----: | -----------------: | ------: |
+| `test_program`                        | 85/232 |             50/232 | **166/232** |
+| `test_generated_python_is_standalone` |  3/232 |             48/232 | **166/232** |
+| Total                                 | 88/464 |             98/464 | **332/464** |
+
+By area:
+
+| Area        | Passed | Area        | Passed |
+| ----------- | -----: | ----------- | -----: |
+| `attempt`   |  16/16 | `operators` |  22/25 |
+| `ripen`     |  19/19 | `control`   |  16/18 |
+| `seeds`     |  18/18 | `values`    |  11/12 |
+| `builtins`  |  22/22 | `programs`  |  11/16 |
+| `lexical`   |  11/11 | `errors`    |   6/60 |
+| `deeds`     |  14/15 |             |        |
+
+**The three features the benchmark exists to test are solved outright** — generations 18/18,
+rollback 16/16, deferred ripening 19/19, where the small model managed 1, 2 and 1. What is left
+is almost entirely `errors` at 6/60: the specification fixes the exact text and position of
+every diagnostic, and that is patient work rather than hard work.
+
+It also wrote a real translator: `bija build` emits a 294-line file that embeds a parser and a VM
+alongside the program's source, and runs standalone. That is the letter of the requirement, and
+so was run 2's version, which simply ran the program and emitted
+`sys.stdout.write('<the output>')`. Two different agents found two ways to satisfy the standalone
+clause without compiling anything, so the specification should require a *translation* of the
+program rather than a file that merely reproduces its output.
+
+**The sample-versus-grader gap is the finding.** The agent verified against everything it had,
+reported success honestly, and was 66 programs short. A benchmark whose visible tests are its
+grading tests would have scored this run 100%.
+
 ### Where to go next
 
 The trajectory is a tree, so the interesting continuations are branches, not new runs. Run 2's
