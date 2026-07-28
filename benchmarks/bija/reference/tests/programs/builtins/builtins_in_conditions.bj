@@ -1,0 +1,10 @@
+when len("abc") = 3 and has([1], 1):
+  utter "both".
+end.
+each n in range(0, 3):
+  when has(range(0, 2), n):
+    utter text(n) + " is in range(0, 2)".
+  otherwise:
+    utter text(n) + " is not".
+  end.
+end.

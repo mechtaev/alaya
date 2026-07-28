@@ -1,0 +1,5 @@
+utter 2 + 3 * 4.
+utter (2 + 3) * 4.
+utter 10 - 2 - 3.
+utter 100 / 10 / 2.
+utter 2 + 10 % 4.

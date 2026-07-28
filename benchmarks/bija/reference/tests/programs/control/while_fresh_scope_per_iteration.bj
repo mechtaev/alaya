@@ -1,0 +1,6 @@
+0 => sow i.
+while i < 3:
+  sow marker.
+  utter depth marker.
+  i + 1 => i.
+end.

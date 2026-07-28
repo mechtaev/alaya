@@ -1,0 +1,29 @@
+deed insert(sorted_so_far, value):
+  [] => sow out.
+  no => sow placed.
+  each item in sorted_so_far:
+    when not placed and value <= item:
+      push(out, value) => out.
+      yes => placed.
+    end.
+    push(out, item) => out.
+  end.
+  when not placed:
+    push(out, value) => out.
+  end.
+  give out.
+end.
+
+deed sort(xs):
+  [] => sow out.
+  each item in xs:
+    insert(out, item) => out.
+  end.
+  give out.
+end.
+
+utter sort([]).
+utter sort([1]).
+utter sort([5, 3, 9, 1, 3]).
+utter sort([9, 8, 7, 6, 5, 4, 3, 2, 1, 0]).
+utter sort(["pear", "apple", "fig"]).

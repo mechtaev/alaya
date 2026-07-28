@@ -1,0 +1,1 @@
+compile_uppercase_identifier.bj:1:10: error: identifiers must start with a lowercase letter or underscore, got 'T'

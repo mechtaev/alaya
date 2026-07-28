@@ -1,0 +1,1 @@
+compile_deed_not_at_top_level.bj:2:3: error: a deed may only be declared at the top level

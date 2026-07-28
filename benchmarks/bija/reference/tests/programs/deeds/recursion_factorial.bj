@@ -1,0 +1,10 @@
+deed factorial(n):
+  when n <= 1:
+    give 1.
+  end.
+  give n * factorial(n - 1).
+end.
+
+utter factorial(0).
+utter factorial(5).
+utter factorial(20).

@@ -1,0 +1,7 @@
+0 => sow x.
+ripen when depth x = 3:
+  utter "third generation: " + text(x) + " after " + text(x@2).
+end.
+1 => x.
+2 => x.
+utter "end".

@@ -1,0 +1,3 @@
+utter chars("abc").
+utter chars("").
+utter len(chars("alaya")).

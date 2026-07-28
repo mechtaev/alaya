@@ -1,0 +1,5 @@
+utter has("alaya", "lay").
+utter has("alaya", "z").
+utter has("alaya", "").
+utter has("", "").
+utter has("alaya", "alaya").

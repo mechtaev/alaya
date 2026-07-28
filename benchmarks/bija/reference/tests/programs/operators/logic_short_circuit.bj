@@ -1,0 +1,8 @@
+deed loud(answer):
+  utter "evaluated".
+  give answer.
+end.
+
+utter no and loud(yes).
+utter yes or loud(no).
+utter yes and loud(no).

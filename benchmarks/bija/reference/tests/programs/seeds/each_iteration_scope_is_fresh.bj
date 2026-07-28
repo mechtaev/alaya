@@ -1,0 +1,4 @@
+each n in [1, 2, 3]:
+  n * 10 => sow scaled.
+  utter text(scaled) + " " + text(depth scaled).
+end.

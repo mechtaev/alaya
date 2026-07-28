@@ -1,0 +1,5 @@
+utter has([1, 2, 3], 2).
+utter has([1, 2, 3], 9).
+utter has([], 1).
+utter has([[1], [2]], [2]).
+utter has([1, yes], yes).

@@ -1,0 +1,1 @@
+compile_chained_comparison.bj:1:13: error: comparisons do not chain; use parentheses

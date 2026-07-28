@@ -1,0 +1,11 @@
+0 => sow kept.
+each n in [1, 2, 3, 4]:
+  attempt:
+    kept + n => kept.
+    when n % 2 = 0:
+      wither.
+    end.
+  end.
+end.
+utter kept.
+utter depth kept.

@@ -1,0 +1,9 @@
+0 => sow x.
+each n in [1, 2, 3]:
+  x + n => x.
+end.
+utter x.
+utter x@1.
+utter x@2.
+utter x@3.
+utter depth x.

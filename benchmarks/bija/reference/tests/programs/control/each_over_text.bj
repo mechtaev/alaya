@@ -1,0 +1,3 @@
+each character in "abc":
+  utter character.
+end.

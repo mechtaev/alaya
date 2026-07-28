@@ -1,0 +1,5 @@
+[1, 2, 3, 4, 5] => sow xs.
+utter slice(xs, 0, 2).
+utter slice(xs, 2, 5).
+utter slice(xs, 0, 5).
+utter slice(xs, 3, 3).

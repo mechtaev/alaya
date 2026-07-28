@@ -1,0 +1,4 @@
+utter yes or no and no.
+utter (yes or no) and no.
+utter not no and yes.
+utter not (no and yes).

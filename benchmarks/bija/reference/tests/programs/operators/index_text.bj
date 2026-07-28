@@ -1,0 +1,4 @@
+"alaya" => sow t.
+utter t[0].
+utter t[4].
+utter len(t[0]).

@@ -1,0 +1,5 @@
+utter number("0").
+utter number("42").
+utter number("-42").
+utter number("007").
+utter number("900719925474099100000000000001").

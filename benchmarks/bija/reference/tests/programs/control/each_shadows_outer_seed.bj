@@ -1,0 +1,5 @@
+"outer" => sow item.
+each item in [1, 2]:
+  utter item.
+end.
+utter item.

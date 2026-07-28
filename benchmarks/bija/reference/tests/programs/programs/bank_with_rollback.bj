@@ -1,0 +1,15 @@
+100 => sow balance.
+
+each amount in [30, 50, 40, 15]:
+  attempt:
+    balance - amount => balance.
+    when balance < 0:
+      utter "declined " + text(amount).
+      wither.
+    end.
+    utter "took " + text(amount) + ", balance " + text(balance).
+  end.
+end.
+
+utter "final " + text(balance).
+utter "plantings kept: " + text(depth balance).

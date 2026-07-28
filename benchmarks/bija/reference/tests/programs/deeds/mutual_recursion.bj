@@ -1,0 +1,17 @@
+deed is_even(n):
+  when n = 0:
+    give yes.
+  end.
+  give is_odd(n - 1).
+end.
+
+deed is_odd(n):
+  when n = 0:
+    give no.
+  end.
+  give is_even(n - 1).
+end.
+
+utter is_even(10).
+utter is_odd(7).
+utter is_even(0).

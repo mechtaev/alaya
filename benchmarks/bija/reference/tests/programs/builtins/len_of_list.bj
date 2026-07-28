@@ -1,0 +1,3 @@
+utter len([]).
+utter len([1]).
+utter len([1, [2, 3], 4]).

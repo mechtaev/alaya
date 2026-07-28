@@ -1,0 +1,11 @@
+deed compute():
+  10 => sow local.
+  20 => local.
+  give local + depth local.
+end.
+
+attempt:
+  utter compute().
+  wither.
+end.
+utter compute().

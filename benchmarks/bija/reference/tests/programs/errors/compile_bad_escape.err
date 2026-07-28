@@ -1,0 +1,1 @@
+compile_bad_escape.bj:1:12: error: unknown escape \q

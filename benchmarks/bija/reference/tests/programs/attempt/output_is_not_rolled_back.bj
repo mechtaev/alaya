@@ -1,0 +1,5 @@
+attempt:
+  utter "this was said".
+  wither.
+end.
+utter "and cannot be unsaid".

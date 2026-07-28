@@ -1,0 +1,6 @@
+1 => sow x.
+when yes:
+  2 => sow x.
+  utter x.
+end.
+utter x.

@@ -1,0 +1,4 @@
+utter "one".
+utter "two".
+utter 1 / 0.
+utter "never".

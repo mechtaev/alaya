@@ -1,0 +1,9 @@
+deed collect(n):
+  [] => sow acc.
+  each i in range(0, n):
+    push(acc, i * i) => acc.
+  end.
+  give [acc, depth acc].
+end.
+
+utter collect(4).

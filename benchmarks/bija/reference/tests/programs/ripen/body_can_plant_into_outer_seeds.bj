@@ -1,0 +1,8 @@
+0 => sow total.
+0 => sow trigger.
+ripen when trigger = 1:
+  total + 10 => total.
+end.
+1 => trigger.
+utter total.
+utter depth total.

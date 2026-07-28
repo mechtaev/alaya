@@ -1,0 +1,7 @@
+utter 1 = 1.
+utter 1 = 2.
+utter "a" = "a".
+utter "a" = "b".
+utter yes = yes.
+utter yes = no.
+utter void = void.

@@ -1,0 +1,7 @@
+0 => sow x.
+1 => x.
+2 => x.
+when x@2 < x:
+  utter "grew".
+end.
+utter x@2 + x@1 + x@0.

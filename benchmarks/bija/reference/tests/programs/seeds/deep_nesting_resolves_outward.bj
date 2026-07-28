@@ -1,0 +1,11 @@
+1 => sow a.
+when yes:
+  when yes:
+    when yes:
+      a + 1 => a.
+      2 => sow b.
+      utter a + b.
+    end.
+  end.
+end.
+utter a.

@@ -1,0 +1,11 @@
+0 => sow x.
+ripen when x = 1:
+  utter "outer ripened".
+  ripen when x = 2:
+    utter "inner ripened".
+  end.
+  2 => x.
+  utter "inner registered".
+end.
+1 => x.
+utter "after".

@@ -1,0 +1,25 @@
+~~ A pipeline that reports on itself as thresholds ripen.
+
+0 => sow processed.
+0 => sow errors.
+"" => sow log.
+
+ripen when processed >= 3:
+  log + "[three processed]" => log.
+end.
+ripen when errors > 0:
+  log + "[first error]" => log.
+end.
+ripen when processed = 5 and errors = 2:
+  log + "[done with 2 errors]" => log.
+end.
+
+each item in [1, 0, 3, 0, 5]:
+  processed + 1 => processed.
+  when item = 0:
+    errors + 1 => errors.
+  end.
+end.
+
+utter "processed " + text(processed) + ", errors " + text(errors).
+utter log.

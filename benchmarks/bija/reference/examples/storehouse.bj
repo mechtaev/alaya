@@ -1,0 +1,32 @@
+~~ The three unusual things about Bija, in one program.
+
+~~ 1. A seed is a stack of generations. Nothing is overwritten.
+"draft" => sow doc.
+doc + " revised" => doc.
+doc + " again" => doc.
+
+utter doc.        ~~ draft revised again
+utter doc@1.      ~~ draft revised
+utter doc@2.      ~~ draft
+utter depth doc.  ~~ 3
+
+~~ 2. A block can be undone. Output is not.
+attempt:
+  "ruined" => doc.
+  utter "inside the attempt, doc is: " + doc.
+  wither.
+end.
+utter "after the wither, doc is: " + doc.
+utter "and its history is still " + text(depth doc) + " deep".
+
+~~ 3. An effect can wait for its conditions to ripen.
+0 => sow balance.
+ripen when balance >= 100:
+  utter "balance reached " + text(balance) + " after " + text(depth balance - 1) + " deposits".
+end.
+
+each deposit in [30, 40, 50]:
+  balance + deposit => balance.
+end.
+
+utter "final balance " + text(balance).

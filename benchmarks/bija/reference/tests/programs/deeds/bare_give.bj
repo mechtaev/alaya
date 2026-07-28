@@ -1,0 +1,5 @@
+deed nothing():
+  give.
+end.
+
+utter nothing().

@@ -1,0 +1,11 @@
+1 => sow a.
+"one" => sow b.
+[1] => sow c.
+attempt:
+  2 => a.
+  "two" => b.
+  [1, 2] => c.
+  utter text(a) + " " + b + " " + text(c).
+  wither.
+end.
+utter text(a) + " " + b + " " + text(c).

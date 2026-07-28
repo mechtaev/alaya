@@ -1,0 +1,12 @@
+0 => sow x.
+"safe" => sow status.
+attempt:
+  "risky" => status.
+  ripen when x = 1:
+    utter "ripened, now withering".
+    wither.
+  end.
+  1 => x.
+  utter "never".
+end.
+utter status.

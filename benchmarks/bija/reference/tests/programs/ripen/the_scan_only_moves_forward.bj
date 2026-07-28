@@ -1,0 +1,12 @@
+0 => sow a.
+0 => sow b.
+ripen when b = 1:
+  utter "b ripened".
+end.
+ripen when a = 1:
+  utter "a ripened".
+  1 => b.
+end.
+1 => a.
+utter "between".
+utter "end".

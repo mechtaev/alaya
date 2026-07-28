@@ -1,0 +1,5 @@
+[10, 20, 30] => sow xs.
+utter xs[0].
+utter xs[1].
+utter xs[2].
+utter [[1, 2], [3]][0][1].

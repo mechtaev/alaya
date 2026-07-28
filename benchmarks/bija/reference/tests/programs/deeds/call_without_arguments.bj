@@ -1,0 +1,5 @@
+deed greet():
+  give "hello".
+end.
+
+utter greet().

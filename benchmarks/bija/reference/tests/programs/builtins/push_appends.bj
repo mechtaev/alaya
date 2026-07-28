@@ -1,0 +1,4 @@
+utter push([], 1).
+utter push([1, 2], 3).
+utter push([], [1]).
+utter push(push([], "a"), "b").

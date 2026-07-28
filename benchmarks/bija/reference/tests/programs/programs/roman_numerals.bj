@@ -1,0 +1,19 @@
+deed roman(n):
+  [1000, 900, 500, 400, 100, 90, 50, 40, 10, 9, 5, 4, 1] => sow values.
+  ["M", "CM", "D", "CD", "C", "XC", "L", "XL", "X", "IX", "V", "IV", "I"] => sow signs.
+  "" => sow out.
+  n => sow left.
+  0 => sow i.
+  while i < len(values):
+    while left >= values[i]:
+      out + signs[i] => out.
+      left - values[i] => left.
+    end.
+    i + 1 => i.
+  end.
+  give out.
+end.
+
+each n in [1, 4, 9, 14, 40, 90, 400, 1994, 2024, 3888]:
+  utter roman(n).
+end.

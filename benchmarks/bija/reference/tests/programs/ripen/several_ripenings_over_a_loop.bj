@@ -1,0 +1,11 @@
+0 => sow count.
+ripen when count = 2:
+  utter "reached two".
+end.
+ripen when count = 4:
+  utter "reached four".
+end.
+each n in [1, 2, 3, 4]:
+  n => count.
+end.
+utter "loop over, count is " + text(count).

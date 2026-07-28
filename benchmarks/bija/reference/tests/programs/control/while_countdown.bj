@@ -1,0 +1,6 @@
+3 => sow n.
+while n > 0:
+  utter n.
+  n - 1 => n.
+end.
+utter "liftoff".

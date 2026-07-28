@@ -1,0 +1,6 @@
+[] => sow xs.
+push(xs, 1) => xs.
+push(xs, 2) => xs.
+utter xs.
+utter xs@1.
+utter xs@2.

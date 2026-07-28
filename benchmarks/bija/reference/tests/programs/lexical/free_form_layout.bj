@@ -1,0 +1,10 @@
+utter
+   1
+   +
+   2
+.
+when
+  yes
+:
+  utter "spread out".
+end.

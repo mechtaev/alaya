@@ -1,0 +1,7 @@
+1 => sow outer.
+
+deed peek():
+  give outer.
+end.
+
+utter peek().

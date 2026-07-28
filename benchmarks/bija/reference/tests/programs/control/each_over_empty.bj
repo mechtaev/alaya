@@ -1,0 +1,7 @@
+each item in []:
+  utter "never".
+end.
+each character in "":
+  utter "never".
+end.
+utter "done".

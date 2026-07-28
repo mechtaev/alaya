@@ -1,0 +1,6 @@
+[1, 2, 3] => sow xs.
+each n in xs:
+  [9] => xs.
+  utter n.
+end.
+utter xs.

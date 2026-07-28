@@ -1,0 +1,9 @@
+0 => sow x.
+ripen when x > 0:
+  utter "first".
+end.
+ripen when x > 0:
+  utter "second".
+end.
+1 => x.
+utter "done".

@@ -1,0 +1,4 @@
+when no:
+  utter "not taken".
+end.
+utter "after".

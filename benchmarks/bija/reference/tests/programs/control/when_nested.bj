@@ -1,0 +1,11 @@
+each n in [1, 2, 3, 4]:
+  when n % 2 = 0:
+    when n > 2:
+      utter text(n) + ": big even".
+    otherwise:
+      utter text(n) + ": small even".
+    end.
+  otherwise:
+    utter text(n) + ": odd".
+  end.
+end.

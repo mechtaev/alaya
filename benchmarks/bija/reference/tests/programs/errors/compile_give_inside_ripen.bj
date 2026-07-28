@@ -1,0 +1,8 @@
+deed watcher(n):
+  ripen when n = 1:
+    give 2.
+  end.
+  give 3.
+end.
+
+utter watcher(1).

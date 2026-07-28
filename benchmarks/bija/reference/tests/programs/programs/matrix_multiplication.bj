@@ -1,0 +1,23 @@
+deed mul(a, b):
+  [] => sow out.
+  each row in a:
+    [] => sow new_row.
+    0 => sow j.
+    while j < len(b[0]):
+      0 => sow total.
+      0 => sow k.
+      while k < len(row):
+        total + row[k] * b[k][j] => total.
+        k + 1 => k.
+      end.
+      push(new_row, total) => new_row.
+      j + 1 => j.
+    end.
+    push(out, new_row) => out.
+  end.
+  give out.
+end.
+
+utter mul([[1, 2], [3, 4]], [[5, 6], [7, 8]]).
+utter mul([[1, 0], [0, 1]], [[9, 8], [7, 6]]).
+utter mul([[1, 2, 3]], [[1], [2], [3]]).

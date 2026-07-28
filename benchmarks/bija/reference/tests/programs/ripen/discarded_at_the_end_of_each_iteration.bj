@@ -1,0 +1,10 @@
+0 => sow i.
+0 => sow seen.
+while i < 3:
+  ripen when seen = 99:
+    utter "never".
+  end.
+  i + 1 => i.
+end.
+99 => seen.
+utter "done".

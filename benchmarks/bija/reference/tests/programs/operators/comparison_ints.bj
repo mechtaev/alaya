@@ -1,0 +1,6 @@
+utter 1 < 2.
+utter 2 < 1.
+utter 2 <= 2.
+utter 3 > 2.
+utter 2 >= 3.
+utter -1 < 0.

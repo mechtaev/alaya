@@ -1,0 +1,5 @@
+deed shout(word):
+  utter word.
+end.
+
+utter shout("hi").

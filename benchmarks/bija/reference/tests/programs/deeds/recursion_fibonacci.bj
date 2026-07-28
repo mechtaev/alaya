@@ -1,0 +1,10 @@
+deed fib(n):
+  when n < 2:
+    give n.
+  end.
+  give fib(n - 1) + fib(n - 2).
+end.
+
+each n in range(0, 10):
+  utter fib(n).
+end.

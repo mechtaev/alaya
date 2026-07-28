@@ -1,0 +1,5 @@
+utter text(42) = "42".
+utter text(yes) = "yes".
+utter text(void) = "void".
+utter text("hi") = "hi".
+utter text([1, "a"]).

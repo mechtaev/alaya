@@ -1,0 +1,14 @@
+0 => sow i.
+0 => sow total.
+attempt:
+  while i < 10:
+    i + 1 => i.
+    total + i => total.
+    when i = 3:
+      wither.
+    end.
+  end.
+  utter "never".
+end.
+utter i.
+utter total.

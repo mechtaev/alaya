@@ -1,0 +1,4 @@
+utter 2 ^ 3.
+utter 2 ^ 3 ^ 2.
+utter 2 ^ 0.
+utter 0 ^ 0.

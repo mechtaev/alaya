@@ -1,0 +1,1 @@
+compile_missing_period.bj:2:1: error: expected '.', found 'utter'

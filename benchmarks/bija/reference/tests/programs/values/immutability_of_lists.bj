@@ -1,0 +1,5 @@
+[1, 2] => sow a.
+a => sow b.
+push(a, 3) => a.
+utter a.
+utter b.

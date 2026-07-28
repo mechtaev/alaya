@@ -1,0 +1,4 @@
+utter [].
+utter [1].
+utter [1, 2, 3].
+utter [1, "two", yes, void, [4, 5]].

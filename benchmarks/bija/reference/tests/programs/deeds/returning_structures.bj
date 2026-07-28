@@ -1,0 +1,7 @@
+deed pair(a, b):
+  give [a, b].
+end.
+
+utter pair(1, "two").
+utter pair(pair(1, 2), pair(3, 4)).
+utter pair(1, 2)[1].

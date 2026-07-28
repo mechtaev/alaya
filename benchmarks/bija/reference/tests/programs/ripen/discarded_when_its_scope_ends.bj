@@ -1,0 +1,9 @@
+0 => sow x.
+when yes:
+  ripen when x = 5:
+    utter "never".
+  end.
+  utter "inside".
+end.
+5 => x.
+utter "outside".

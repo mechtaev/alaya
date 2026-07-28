@@ -1,0 +1,5 @@
+when yes:
+  deed inner():
+    give 1.
+  end.
+end.

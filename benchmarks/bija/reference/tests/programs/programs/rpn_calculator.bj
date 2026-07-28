@@ -1,0 +1,27 @@
+deed rpn(tokens):
+  [] => sow stack.
+  each t in tokens:
+    when t = "+" or t = "-" or t = "*":
+      stack[len(stack) - 2] => sow a.
+      stack[len(stack) - 1] => sow b.
+      slice(stack, 0, len(stack) - 2) => stack.
+      when t = "+":
+        push(stack, a + b) => stack.
+      end.
+      when t = "-":
+        push(stack, a - b) => stack.
+      end.
+      when t = "*":
+        push(stack, a * b) => stack.
+      end.
+    otherwise:
+      push(stack, number(t)) => stack.
+    end.
+  end.
+  give stack[0].
+end.
+
+utter rpn(["3", "4", "+"]).
+utter rpn(["3", "4", "+", "2", "*"]).
+utter rpn(["5", "1", "2", "+", "4", "*", "-"]).
+utter rpn(["-3", "-4", "*"]).

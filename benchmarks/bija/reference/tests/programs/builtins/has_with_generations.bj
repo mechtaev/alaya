@@ -1,0 +1,7 @@
+[] => sow seen.
+each n in [3, 1, 3, 2, 1]:
+  when not has(seen, n):
+    push(seen, n) => seen.
+  end.
+end.
+utter seen.

@@ -1,0 +1,8 @@
+0 => sow x.
+0 => sow checks.
+ripen when x = 3:
+  utter "checks so far: " + text(checks).
+end.
+checks + 1 => checks.
+checks + 1 => checks.
+3 => x.

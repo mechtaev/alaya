@@ -1,0 +1,4 @@
+[1] => sow xs.
+push(xs, 2) => sow ys.
+utter xs.
+utter ys.

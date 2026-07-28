@@ -1,0 +1,11 @@
+deed watch(n):
+  0 => sow local.
+  ripen when local = n:
+    utter "local reached " + text(n).
+  end.
+  1 => local.
+  2 => local.
+  give local.
+end.
+
+utter watch(2).

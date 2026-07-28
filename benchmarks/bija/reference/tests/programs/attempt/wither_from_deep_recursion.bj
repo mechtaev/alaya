@@ -1,0 +1,14 @@
+deed bury(n):
+  when n = 0:
+    wither.
+  end.
+  give bury(n - 1).
+end.
+
+"safe" => sow status.
+attempt:
+  "risky" => status.
+  bury(20).
+  utter "never".
+end.
+utter status.

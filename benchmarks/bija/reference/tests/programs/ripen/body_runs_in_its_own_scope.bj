@@ -1,0 +1,6 @@
+1 => sow x.
+ripen when x = 1:
+  99 => sow x.
+  utter x.
+end.
+utter x.

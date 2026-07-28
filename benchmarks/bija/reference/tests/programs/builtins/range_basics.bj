@@ -1,0 +1,3 @@
+utter range(0, 3).
+utter range(1, 4).
+utter range(-3, 2).

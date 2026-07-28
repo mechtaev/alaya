@@ -1,0 +1,1 @@
+compile_wrong_arity.bj:5:10: error: two takes 2 argument(s), found 1

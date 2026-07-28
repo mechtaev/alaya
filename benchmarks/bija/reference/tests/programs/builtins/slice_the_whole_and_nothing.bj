@@ -1,0 +1,4 @@
+[1, 2, 3] => sow xs.
+utter slice(xs, 0, len(xs)) = xs.
+utter slice(xs, 0, 0) = [].
+utter slice("ab", 0, 0) = "".

@@ -1,0 +1,6 @@
+each n in [1, 2, 3]:
+  ripen when n > 1:
+    utter "ripened for " + text(n).
+  end.
+  utter "iteration " + text(n).
+end.

@@ -1,0 +1,5 @@
+utter text(1) + "|" + text(-1).
+utter text(yes) + "|" + text(no).
+utter text(void).
+utter text("already text").
+utter text([1, "a", [yes]]).

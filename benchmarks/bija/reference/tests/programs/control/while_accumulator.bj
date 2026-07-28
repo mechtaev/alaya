@@ -1,0 +1,7 @@
+0 => sow total.
+1 => sow i.
+while i <= 10:
+  total + i => total.
+  i + 1 => i.
+end.
+utter total.

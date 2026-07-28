@@ -1,0 +1,4 @@
+utter join(["a", "b", "c"], "-").
+utter join(["only"], ",").
+utter join([], ",").
+utter join(["a", "b"], "").

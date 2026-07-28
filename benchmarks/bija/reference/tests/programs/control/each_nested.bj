@@ -1,0 +1,5 @@
+each a in [1, 2]:
+  each b in ["x", "y"]:
+    utter text(a) + b.
+  end.
+end.

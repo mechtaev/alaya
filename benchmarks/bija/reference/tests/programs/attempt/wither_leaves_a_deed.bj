@@ -1,0 +1,12 @@
+deed give_up():
+  utter "giving up".
+  wither.
+end.
+
+1 => sow x.
+attempt:
+  2 => x.
+  give_up().
+  utter "never".
+end.
+utter x.

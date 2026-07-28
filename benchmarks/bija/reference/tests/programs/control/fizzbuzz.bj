@@ -1,0 +1,15 @@
+each n in range(1, 16):
+  when n % 15 = 0:
+    utter "fizzbuzz".
+  otherwise:
+    when n % 3 = 0:
+      utter "fizz".
+    otherwise:
+      when n % 5 = 0:
+        utter "buzz".
+      otherwise:
+        utter n.
+      end.
+    end.
+  end.
+end.

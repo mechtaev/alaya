@@ -1,0 +1,4 @@
+utter "a\tb".
+utter "line\nline".
+utter "quote: \" done".
+utter "back\\slash".

@@ -1,0 +1,3 @@
+each n in 5:
+  utter n.
+end.

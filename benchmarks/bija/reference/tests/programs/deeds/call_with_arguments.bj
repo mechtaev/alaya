@@ -1,0 +1,7 @@
+deed add(a, b):
+  give a + b.
+end.
+
+utter add(2, 3).
+utter add("a", "b").
+utter add([1], [2]).

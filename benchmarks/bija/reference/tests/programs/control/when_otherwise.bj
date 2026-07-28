@@ -1,0 +1,5 @@
+when 1 > 2:
+  utter "impossible".
+otherwise:
+  utter "sensible".
+end.

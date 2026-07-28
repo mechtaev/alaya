@@ -1,0 +1,14 @@
+deed big(n):
+  give n > 10.
+end.
+
+when big(20):
+  utter "big".
+otherwise:
+  utter "small".
+end.
+when big(2):
+  utter "big".
+otherwise:
+  utter "small".
+end.

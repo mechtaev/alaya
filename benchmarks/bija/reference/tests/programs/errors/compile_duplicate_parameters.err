@@ -1,0 +1,1 @@
+compile_duplicate_parameters.bj:1:1: error: deed twice has duplicate parameter names

@@ -1,0 +1,4 @@
+utter join(chars("abc"), "+").
+utter len(slice(range(0, 10), 2, 5)).
+utter text(push(range(0, 3), 3)).
+utter number(join(["1", "2"], "")).

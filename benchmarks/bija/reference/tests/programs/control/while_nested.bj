@@ -1,0 +1,11 @@
+1 => sow i.
+while i <= 3:
+  1 => sow j.
+  "" => sow row.
+  while j <= 3:
+    row + text(i * j) + " " => row.
+    j + 1 => j.
+  end.
+  utter row.
+  i + 1 => i.
+end.

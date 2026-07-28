@@ -1,0 +1,9 @@
+0 => sow x.
+ripen when x = 2:
+  utter "x reached 2".
+end.
+utter "registered".
+1 => x.
+utter "one".
+2 => x.
+utter "two".

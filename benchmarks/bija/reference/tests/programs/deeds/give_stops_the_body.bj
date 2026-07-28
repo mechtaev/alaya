@@ -1,0 +1,11 @@
+deed first_even(xs):
+  each n in xs:
+    when n % 2 = 0:
+      give n.
+    end.
+  end.
+  give -1.
+end.
+
+utter first_even([1, 3, 4, 6]).
+utter first_even([1, 3]).

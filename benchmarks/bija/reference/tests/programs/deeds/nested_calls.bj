@@ -1,0 +1,10 @@
+deed double(n):
+  give n * 2.
+end.
+
+deed quadruple(n):
+  give double(double(n)).
+end.
+
+utter quadruple(5).
+utter double(quadruple(1)).

@@ -1,0 +1,23 @@
+deed is_prime(n):
+  when n < 2:
+    give no.
+  end.
+  2 => sow d.
+  while d * d <= n:
+    when n % d = 0:
+      give no.
+    end.
+    d + 1 => d.
+  end.
+  give yes.
+end.
+
+[] => sow primes.
+each n in range(2, 50):
+  when is_prime(n):
+    push(primes, n) => primes.
+  end.
+end.
+utter primes.
+utter len(primes).
+utter is_prime(7919).

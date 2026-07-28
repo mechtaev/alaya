@@ -1,0 +1,5 @@
+utter "a" < "b".
+utter "abc" < "abd".
+utter "ab" < "abc".
+utter "B" < "a".
+utter "a" >= "a".

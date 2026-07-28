@@ -1,0 +1,9 @@
+5 => sow x.
+
+deed hidden():
+  7 => sow x.
+  give x.
+end.
+
+utter hidden().
+utter x.

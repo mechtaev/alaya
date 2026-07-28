@@ -1,0 +1,5 @@
+0 => sow x.
+ripen when x:
+  utter "never".
+end.
+utter "registered".

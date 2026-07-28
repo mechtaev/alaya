@@ -1,0 +1,36 @@
+~~ A tiny stack machine, interpreted in Bija. Programs are lists of [op, argument].
+
+deed run(program):
+  [] => sow stack.
+  0 => sow pc.
+  "" => sow output.
+  while pc < len(program):
+    program[pc] => sow instruction.
+    instruction[0] => sow op.
+    instruction[1] => sow argument.
+    when op = "push":
+      push(stack, argument) => stack.
+    end.
+    when op = "add":
+      stack[len(stack) - 2] + stack[len(stack) - 1] => sow total.
+      push(slice(stack, 0, len(stack) - 2), total) => stack.
+    end.
+    when op = "dup":
+      push(stack, stack[len(stack) - 1]) => stack.
+    end.
+    when op = "emit":
+      output + text(stack[len(stack) - 1]) + ";" => output.
+    end.
+    when op = "jump_if_zero":
+      when stack[len(stack) - 1] = 0:
+        argument - 1 => pc.
+      end.
+    end.
+    pc + 1 => pc.
+  end.
+  give [stack, output].
+end.
+
+utter run([["push", 2], ["push", 3], ["add", 0], ["emit", 0]]).
+utter run([["push", 7], ["dup", 0], ["add", 0], ["emit", 0]]).
+utter run([["push", 0], ["jump_if_zero", 3], ["push", 99], ["push", 1], ["emit", 0]]).

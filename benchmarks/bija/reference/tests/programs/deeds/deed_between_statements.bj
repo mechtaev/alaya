@@ -1,0 +1,8 @@
+utter "before".
+
+deed middle():
+  give "middle".
+end.
+
+utter middle().
+utter "after".

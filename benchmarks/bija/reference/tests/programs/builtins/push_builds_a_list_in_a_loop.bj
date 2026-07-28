@@ -1,0 +1,6 @@
+[] => sow acc.
+each n in range(1, 6):
+  push(acc, n * n) => acc.
+end.
+utter acc.
+utter depth acc.

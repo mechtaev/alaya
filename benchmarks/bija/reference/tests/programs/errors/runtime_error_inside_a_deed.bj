@@ -1,0 +1,6 @@
+deed divide(a, b):
+  give a / b.
+end.
+
+utter divide(6, 2).
+utter divide(1, 0).

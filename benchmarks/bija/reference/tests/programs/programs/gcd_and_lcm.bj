@@ -1,0 +1,18 @@
+deed gcd(a, b):
+  while b <> 0:
+    b => sow t.
+    a % b => b.
+    t => a.
+  end.
+  give a.
+end.
+
+deed lcm(a, b):
+  give a * b / gcd(a, b).
+end.
+
+utter gcd(48, 18).
+utter gcd(17, 5).
+utter gcd(0, 9).
+utter lcm(4, 6).
+utter lcm(21, 6).

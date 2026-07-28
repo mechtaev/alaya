@@ -1,0 +1,20 @@
+deed split(t, sep):
+  [] => sow out.
+  "" => sow current.
+  each c in t:
+    when c = sep:
+      push(out, current) => out.
+      "" => current.
+    otherwise:
+      current + c => current.
+    end.
+  end.
+  push(out, current) => out.
+  give out.
+end.
+
+utter split("a b c", " ").
+utter split("", " ").
+utter split("no-separators", " ").
+utter len(split("one two three four", " ")).
+utter join(split("a,b,c", ","), " | ").

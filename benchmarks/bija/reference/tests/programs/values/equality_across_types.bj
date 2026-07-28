@@ -1,0 +1,6 @@
+utter 1 = yes.
+utter 0 = no.
+utter "1" = 1.
+utter void = 0.
+utter [] = void.
+utter 1 <> yes.

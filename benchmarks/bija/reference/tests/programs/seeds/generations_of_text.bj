@@ -1,0 +1,6 @@
+"a" => sow t.
+t + "b" => t.
+t + "c" => t.
+utter t.
+utter t@1.
+utter t@2.

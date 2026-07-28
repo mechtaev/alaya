@@ -1,0 +1,19 @@
+deed balanced(t):
+  0 => sow open.
+  each c in chars(t):
+    when c = "(":
+      open + 1 => open.
+    end.
+    when c = ")":
+      open - 1 => open.
+      when open < 0:
+        give no.
+      end.
+    end.
+  end.
+  give open = 0.
+end.
+
+each candidate in ["", "()", "(())", "(()())", ")(", "(", "())("]:
+  utter [candidate, balanced(candidate)].
+end.

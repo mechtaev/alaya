@@ -1,0 +1,3 @@
+utter range(0, 0).
+utter range(5, 1).
+utter len(range(0, 0)).

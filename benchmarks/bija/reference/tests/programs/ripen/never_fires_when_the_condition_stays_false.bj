@@ -1,0 +1,7 @@
+0 => sow x.
+ripen when x = 99:
+  utter "never".
+end.
+1 => x.
+2 => x.
+utter "done".

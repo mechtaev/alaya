@@ -1,0 +1,8 @@
+0 => sow x.
+1 => x.
+2 => x.
+3 => x.
+1 => sow k.
+utter x@k.
+utter x@(k + 1).
+utter x@(depth x - 1).

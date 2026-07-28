@@ -1,0 +1,17 @@
+~~ Generations are an undo history: nothing is overwritten, so an older draft is
+~~ still readable, and planting it back is a redo.
+
+"" => sow doc.
+doc + "hello" => doc.
+doc + " world" => doc.
+doc + "!" => doc.
+
+utter doc.
+utter doc@1.
+utter doc@2.
+utter depth doc.
+
+doc@2 => doc.
+utter doc.
+utter depth doc.
+utter doc@1.

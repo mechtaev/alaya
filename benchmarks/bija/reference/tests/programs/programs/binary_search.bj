@@ -1,0 +1,21 @@
+deed find(xs, target):
+  0 => sow lo.
+  len(xs) => sow hi.
+  while lo < hi:
+    (lo + hi) / 2 => sow mid.
+    when xs[mid] = target:
+      give mid.
+    end.
+    when xs[mid] < target:
+      mid + 1 => lo.
+    otherwise:
+      mid => hi.
+    end.
+  end.
+  give -1.
+end.
+
+[1, 3, 5, 7, 9, 11] => sow xs.
+each target in [1, 5, 11, 4, 12]:
+  utter text(target) + " -> " + text(find(xs, target)).
+end.

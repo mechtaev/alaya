@@ -1,0 +1,5 @@
+5 => sow x.
+ripen when x = 5:
+  utter "already".
+end.
+utter "after".

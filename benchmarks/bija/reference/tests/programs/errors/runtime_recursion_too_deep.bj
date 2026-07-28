@@ -1,0 +1,5 @@
+deed forever(n):
+  give forever(n + 1).
+end.
+
+utter forever(0).

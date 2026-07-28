@@ -1,0 +1,31 @@
+~~ Collatz, with a rollback and a deferred report.
+
+deed step(n):
+  when n % 2 = 0:
+    give n / 2.
+  otherwise:
+    give 3 * n + 1.
+  end.
+end.
+
+27 => sow n.
+0 => sow steps.
+
+ripen when n = 1:
+  utter "reached 1 in " + text(steps) + " steps".
+end.
+
+while n <> 1:
+  step(n) => n.
+  steps + 1 => steps.
+end.
+
+utter "highest generation still readable: " + text(n@steps).
+
+attempt:
+  999 => n.
+  utter "inside: " + text(n).
+  wither.
+end.
+
+utter "after wither: " + text(n).

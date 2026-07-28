@@ -1,0 +1,7 @@
+deed twice(n):
+  give n.
+end.
+
+deed twice(n):
+  give n.
+end.

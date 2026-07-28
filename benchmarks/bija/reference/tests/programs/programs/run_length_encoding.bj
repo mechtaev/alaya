@@ -1,0 +1,20 @@
+deed encode(t):
+  "" => sow out.
+  0 => sow i.
+  while i < len(t):
+    t[i] => sow c.
+    1 => sow count.
+    while i + count < len(t) and t[i + count] = c:
+      count + 1 => count.
+    end.
+    out + c + text(count) => out.
+    i + count => i.
+  end.
+  give out.
+end.
+
+utter encode("").
+utter encode("a").
+utter encode("aaabbc").
+utter encode("abcd").
+utter encode("aaaaaaaaaaaa").

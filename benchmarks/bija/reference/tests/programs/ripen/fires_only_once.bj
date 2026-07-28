@@ -1,0 +1,8 @@
+0 => sow x.
+ripen when x > 0:
+  utter "fired".
+end.
+1 => x.
+2 => x.
+3 => x.
+utter "done".

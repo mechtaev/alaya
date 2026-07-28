@@ -1,0 +1,9 @@
+1 => sow x.
+when yes:
+  2 => sow x.
+  3 => x.
+  utter x.
+  utter depth x.
+end.
+utter x.
+utter depth x.

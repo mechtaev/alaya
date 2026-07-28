@@ -1,0 +1,5 @@
+deed two(a, b):
+  give a + b.
+end.
+
+utter two(1).

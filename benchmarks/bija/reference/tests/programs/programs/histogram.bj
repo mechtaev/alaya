@@ -1,0 +1,22 @@
+deed bar(n):
+  "" => sow out.
+  each i in range(0, n):
+    out + "#" => out.
+  end.
+  give out.
+end.
+
+deed count_in(xs, value):
+  0 => sow total.
+  each x in xs:
+    when x = value:
+      total + 1 => total.
+    end.
+  end.
+  give total.
+end.
+
+[1, 3, 2, 3, 3, 1, 2, 3] => sow data.
+each value in [1, 2, 3]:
+  utter text(value) + " " + bar(count_in(data, value)).
+end.

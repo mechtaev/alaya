@@ -1,0 +1,5 @@
+utter twice(21).
+
+deed twice(n):
+  give n * 2.
+end.

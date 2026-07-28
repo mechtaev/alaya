@@ -1,0 +1,8 @@
+0 => sow k.
+each i in range(1, 6):
+  k + i => k.
+end.
+utter k.
+utter k@1.
+utter k@5.
+utter depth k.

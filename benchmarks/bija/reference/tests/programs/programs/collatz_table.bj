@@ -1,0 +1,17 @@
+deed steps(n):
+  0 => sow count.
+  n => sow k.
+  while k <> 1:
+    when k % 2 = 0:
+      k / 2 => k.
+    otherwise:
+      3 * k + 1 => k.
+    end.
+    count + 1 => count.
+  end.
+  give count.
+end.
+
+each n in range(1, 11):
+  utter text(n) + ": " + text(steps(n)).
+end.
