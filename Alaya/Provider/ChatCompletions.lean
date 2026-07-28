@@ -70,12 +70,18 @@ private def requestIO (config : Config) (payload : String) : IO CurlResponse :=
     let headers ← if ← headersPath.pathExists then IO.FS.readFile headersPath else pure ""
     pure { exitCode := result.exitCode, statusOutput := result.stdout, stderr := result.stderr, body, headers }
 
+/-- Extracts a provider throttling delay: `retry-after-ms` (milliseconds, used by some
+providers, preferred as the more precise) or the integer-seconds form of `retry-after`. -/
 private def retryAfterMs? (headers : String) : Option Nat :=
-  (headers.splitOn "\n").reverse.findSome? fun line =>
-    let line := line.trimAscii.toString
-    if line.toLower.startsWith "retry-after:" then
-      line.drop "retry-after:".length |>.trimAscii.toString.toNat?.map (· * 1000)
-    else none
+  -- The dump can hold several responses (redirects); reversing makes the final response win.
+  -- Lowercasing leaves the digits intact, so values can be parsed from the normalized lines.
+  let lines := (headers.splitOn "\n").reverse.map fun line => line.trimAscii.toString.toLower
+  let value? (name : String) : Option Nat :=
+    lines.findSome? fun line =>
+      if line.startsWith s!"{name}:" then
+        line.drop (name.length + 1) |>.trimAscii.toString.toNat?
+      else none
+  (value? "retry-after-ms").orElse fun _ => (value? "retry-after").map (· * 1000)
 
 private def complete (config : Config) (temperature : Lean.Json) (request : Chat.Request)
     (n : Nat) : Result (Array Chat.Response) := do
@@ -118,5 +124,26 @@ def model (config : Config) : Result Model := do
       nextN? := if config.nativeBatching then some (complete config temperature request) else none
     }
   }
+
+/-- Builds a provider model whose API key (and optionally base URL) come from the environment.
+
+The key is read from `keyVar`, treating empty values as unset. `defaultKey?` supplies a
+fallback for servers that need no real credential; without one, a missing key is a
+configuration error. When `baseUrlVar?` is given and set, it overrides `baseUrl`. -/
+def modelFromEnv (provider keyVar baseUrl name : String) (temperature : Float)
+    (defaultKey? : Option String := none)
+    (baseUrlVar? : Option String := none)
+    (canonicalModelName? : Option String := none)
+    (structuredOutput := Chat.StructuredOutput.native) : Result Model := do
+  let env (envVar : String) : Result (Option String) :=
+    Result.fromIO Error.configuration do pure ((← IO.getEnv envVar).filter (!·.isEmpty))
+  let apiKey ← match (← env keyVar), defaultKey? with
+    | some key, _ => pure key
+    | none, some fallback => pure fallback
+    | none, none => throw <| .configuration s!"{keyVar} is not set"
+  let baseUrl ← match baseUrlVar? with
+    | some envVar => pure ((← env envVar).getD baseUrl)
+    | none => pure baseUrl
+  model { provider, baseUrl, apiKey, name, canonicalModelName?, temperature, structuredOutput }
 
 end Alaya.Provider.ChatCompletions

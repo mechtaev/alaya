@@ -7,6 +7,10 @@ structure ToolCall where
   id : String
   name : String
   arguments : Lean.Json
+  /-- The raw `arguments` string when it was not valid JSON (e.g. a call truncated by the
+  output-token limit); `arguments` is then `.null`. Models do emit these, so they are a fact of
+  the protocol, not a provider failure — agents surface them as format errors. -/
+  invalidArguments? : Option String := none
   deriving Inhabited
 
 inductive Message where
@@ -24,7 +28,8 @@ private def toolCallToJson (call : ToolCall) : Lean.Json :=
     ("type", "function"),
     ("function", .mkObj [
       ("name", call.name),
-      ("arguments", call.arguments.compress)
+      -- Invalid arguments are echoed back verbatim, exactly as they arrived.
+      ("arguments", call.invalidArguments?.getD call.arguments.compress)
     ])
   ]
 
@@ -36,7 +41,9 @@ def toJson : Message -> Lean.Json
     let json := match content? with | some content => json.setObjVal! "content" content | none => json
     if toolCalls.isEmpty then json else json.setObjVal! "tool_calls" (.arr <| toolCalls.map toolCallToJson)
   | .tool callId content =>
-    .mkObj [("role", "tool"), ("tool_call_id", callId), ("content", content.compress)]
+    -- A string tool result is sent as-is; structured results are compacted to a JSON string.
+    let contentStr := match content with | .str s => s | other => other.compress
+    .mkObj [("role", "tool"), ("tool_call_id", callId), ("content", contentStr)]
 
 end Message
 
@@ -44,6 +51,10 @@ structure ToolDefinition where
   name : String
   description : String
   parameters : JsonSchema
+  /-- When set, this exact JSON is used for the `parameters` field instead of serializing
+  `parameters`. Lets a caller reproduce a provider's tool schema byte-for-byte (e.g. one that
+  omits `additionalProperties`). -/
+  parametersJson? : Option Lean.Json := none
   deriving Inhabited
 
 namespace ToolDefinition
@@ -54,7 +65,7 @@ def toJson (tool : ToolDefinition) : Lean.Json :=
     ("function", .mkObj [
       ("name", tool.name),
       ("description", tool.description),
-      ("parameters", tool.parameters.toJson)
+      ("parameters", tool.parametersJson?.getD tool.parameters.toJson)
     ])
   ]
 
@@ -152,6 +163,9 @@ structure Response where
   content? : Option String := none
   toolCalls : Array ToolCall := #[]
   usage? : Option TokenUsage := none
+  /-- The provider's `finish_reason` for this choice (e.g. "stop", "tool_calls", "length"),
+  when reported. Some control flows distinguish a truncated response from a formatting error. -/
+  finishReason? : Option String := none
   raw : Lean.Json
   structuredOutput : StructuredOutput := .native
   deriving Inhabited
@@ -165,9 +179,11 @@ private def parseToolCall (json : Lean.Json) : Except String ToolCall := do
   let id ← liftJson "tool call has no id" <| json.getObjVal? "id" >>= Lean.Json.getStr?
   let function ← liftJson "tool call has no function" <| json.getObjVal? "function"
   let name ← liftJson "tool call function has no name" <| function.getObjVal? "name" >>= Lean.Json.getStr?
-  let arguments ← liftJson "tool call function has invalid arguments" <|
-    function.getObjVal? "arguments" >>= Lean.Json.getStr? >>= Lean.Json.parse
-  pure { id, name, arguments }
+  let raw ← liftJson "tool call function has no arguments" <|
+    function.getObjVal? "arguments" >>= Lean.Json.getStr?
+  match Lean.Json.parse raw with
+  | .ok arguments => pure { id, name, arguments }
+  | .error _ => pure { id, name, arguments := .null, invalidArguments? := some raw }
 
 private def usageFromJson? (raw : Lean.Json) : Option TokenUsage :=
   match raw.getObjVal? "usage" with
@@ -212,7 +228,8 @@ def fromJsons (raw : Lean.Json) : Result (Array Response) :=
         | .ok .null => pure #[]
         | .ok calls => calls.getArr?.bind fun calls => calls.mapM parseToolCall
         | .error _ => pure #[]
-      pure { content?, toolCalls, usage?, raw }
+      let finishReason? := (choice.getObjVal? "finish_reason" >>= Lean.Json.getStr?).toOption
+      pure { content?, toolCalls, usage?, finishReason?, raw }
 
 def fromJson (raw : Lean.Json) : Result Response := do
   let responses ← fromJsons raw

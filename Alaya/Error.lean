@@ -15,23 +15,41 @@ inductive Error where
   | structuredOutput (message : String)
   /-- Reading, extending, or atomically persisting a cache entry failed. -/
   | cache (message : String)
+  /-- Reading or writing the content-addressed store, or a filesystem snapshot, failed. -/
+  | storage (message : String)
   /-- The operation was intentionally cancelled. -/
   | cancelled
   deriving Repr, Inhabited
 
-abbrev Result (alpha : Type) := EIO Error alpha
+/-- One line naming the failure, for a command-line front end. -/
+def Error.describe : Error -> String
+  | .configuration m => m
+  | .transport m => s!"transport: {m}"
+  | .http status body _ => s!"http {status}: {body}"
+  | .provider m => s!"provider: {m}"
+  | .protocol m => s!"protocol: {m}"
+  | .structuredOutput m => s!"structured output: {m}"
+  | .cache m => s!"cache: {m}"
+  | .storage m => s!"storage: {m}"
+  | .cancelled => "cancelled"
+
+abbrev Result (α : Type) := EIO Error α
 
 namespace Result
 
-def fromIO (kind : String -> Error) (action : IO alpha) : Result alpha := do
+def fromIO (kind : String -> Error) (action : IO α) : Result α := do
   match ← action.toBaseIO with
   | .ok value => pure value
   | .error error => throw <| kind error.toString
 
-def fromExcept (kind : String -> Error) (result : Except String alpha) : Result alpha :=
+def fromExcept (kind : String -> Error) (result : Except String α) : Result α :=
   match result with
   | .ok value => pure value
   | .error error => throw <| kind error
+
+/-- Runs a typed action in plain `IO`, rendering any typed failure as a user error. -/
+def toUserIO (result : Result α) : IO α :=
+  result.toIO fun error => IO.userError s!"{repr error}"
 
 end Result
 end Alaya

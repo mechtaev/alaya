@@ -20,9 +20,11 @@ private def responseToJson (response : Chat.Response) : Lean.Json :=
     ("tool_calls", .arr <| response.toolCalls.map fun call => .mkObj [
       ("id", call.id),
       ("name", call.name),
-      ("arguments", call.arguments)
+      ("arguments", call.arguments),
+      ("invalid_arguments", call.invalidArguments?.map Lean.Json.str |>.getD .null)
     ]),
-    ("usage", response.usage?.map usageToJson |>.getD .null)
+    ("usage", response.usage?.map usageToJson |>.getD .null),
+    ("finish_reason", response.finishReason?.map Lean.Json.str |>.getD .null)
   ]
 
 private def responsesToJson (key : String) (responses : Array Chat.Response) : Lean.Json :=
@@ -51,9 +53,11 @@ private def responseFromJson (json : Lean.Json) : Except String Chat.Response :=
     let id ← liftJson "cached tool call has no id" <| call.getObjVal? "id" >>= Lean.Json.getStr?
     let name ← liftJson "cached tool call has no name" <| call.getObjVal? "name" >>= Lean.Json.getStr?
     let arguments ← liftJson "cached tool call has no arguments" <| call.getObjVal? "arguments"
-    pure { id, name, arguments }
+    let invalidArguments? := (call.getObjVal? "invalid_arguments" >>= Lean.Json.getStr?).toOption
+    pure { id, name, arguments, invalidArguments? }
   let usage? := usageFromJson? json
-  pure { content?, toolCalls, usage?, raw := .null }
+  let finishReason? := (json.getObjVal? "finish_reason" >>= Lean.Json.getStr?).toOption
+  pure { content?, toolCalls, usage?, finishReason?, raw := .null }
 
 private def responsesFromJson (key : String) (json : Lean.Json) : Except String (Array Chat.Response) := do
   let version ← liftJson "cached entry has no version" <| json.getObjVal? "version" >>= Lean.Json.getNat?

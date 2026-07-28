@@ -1,3 +1,4 @@
+import Std.Sync.Semaphore
 import Alaya.Error
 import Alaya.Chat.Protocol
 import Alaya.Retry
@@ -22,7 +23,10 @@ end Model.Stream
 
 inductive BatchSampling where
   | native
-  | concurrent
+  /-- Every request in flight at once, optionally bounded to `maxInFlight?` concurrent provider
+  requests so fan-out and concurrent callers cannot saturate a provider into rate limiting
+  (HTTP 429). The bound is shared by all streams of the adapted model. -/
+  | concurrent (maxInFlight? : Option Nat := none)
   | sequential
   deriving Repr, Inhabited
 
@@ -54,7 +58,11 @@ def retry (inner : Model) (config : Retry.Config) : Result Model :=
   }
 
 /-- Selects native, concurrent, or sequential sampling on top of retried single requests. -/
-def batch (inner : Model) (mode : BatchSampling) : Result Model :=
+def batch (inner : Model) (mode : BatchSampling) : Result Model := do
+  let semaphore? : Option Std.Semaphore ← match mode with
+    | .concurrent (some 0) => throw <| .configuration "batch maxInFlight must be at least one"
+    | .concurrent (some permits) => some <$> Std.Semaphore.new permits
+    | _ => pure none
   pure {
     identity := inner.identity
     structuredOutput := inner.structuredOutput
@@ -64,15 +72,27 @@ def batch (inner : Model) (mode : BatchSampling) : Result Model :=
         match mode with
         | .native => stream.nextN n
         | .sequential => Model.Stream.nextN { next := stream.next } n
-        | .concurrent => do
+        | .concurrent _ => do
           -- Each request blocks its thread on a curl subprocess for the whole round-trip, so run it
           -- on a dedicated thread rather than a shared task-pool worker. Default-priority tasks would
           -- cap real parallelism at the pool size and let blocked workers starve the scheduler.
           let tasks ← Result.fromIO Error.transport <| (List.replicate n ()).mapM fun _ =>
-            BaseIO.asTask (prio := .dedicated) (do
-              match (← (inner.sample request).toBaseIO) with
-              | .ok stream => stream.next.toBaseIO
-              | .error error => pure <| .error error)
+            BaseIO.asTask (prio := .dedicated) do
+              let sampleOnce : BaseIO (Except Error Chat.Response) := do
+                match (← (inner.sample request).toBaseIO) with
+                | .ok stream => stream.next.toBaseIO
+                | .error error => pure <| .error error
+              match semaphore? with
+              | none => sampleOnce
+              | some semaphore =>
+                -- Block this dedicated thread until a permit frees; one permit covers one
+                -- provider request for its whole round-trip. `sampleOnce` cannot throw (its
+                -- failures are values), so the release always runs.
+                let permit ← Std.Semaphore.acquire semaphore
+                let _ ← IO.wait permit.result!
+                let result ← sampleOnce
+                Std.Semaphore.release semaphore
+                pure result
           let results ← Result.fromIO Error.transport <| tasks.mapM fun task => pure task.get
           let mut responses := #[]
           for result in results do

@@ -10,6 +10,14 @@ name = "Alaya"
 name = "alaya"
 root = "Main"
 
+[[lean_lib]]
+name = "Test"
+globs = ["Test.+"]
+
 [[lean_exe]]
 name = "tests"
 root = "Test"
+
+[[lean_exe]]
+name = "benchmark"
+root = "Benchmark"
