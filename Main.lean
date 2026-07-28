@@ -5,7 +5,7 @@ import Alaya
 open Alaya
 open Alaya.Cas (Store Hash)
 open Alaya.Agent (Outcome)
-open Alaya.Agent.MiniSwe (Config Runtime)
+open Alaya.Agent.MiniSwe
 open Alaya.Agent.MiniSwe.Session
 
 private def emit (s : String) : Result Unit := Result.fromIO Error.storage (IO.println s)
@@ -13,9 +13,9 @@ private def emit (s : String) : Result Unit := Result.fromIO Error.storage (IO.p
 private def emitLines (lines : Array String) : Result Unit :=
   lines.forM emit
 
-/-- The data directory: every durable artefact of every run, namely the content-addressed store
-under `path/store` and the model cache under `path/cache`. The agent never executes here, and
-nothing in here is ever destroyed by a checkout. Selected by `--data` (default `.alaya`). -/
+/-- The data directory: everything one set of runs needs, namely the content-addressed store
+under `path/store`, the model cache under `path/cache`, and the agent's work directory under
+`path/work`. Selected by `--data` (default `.alaya`), the only directory flag there is. -/
 private structure DataDir where
   path : System.FilePath
   store : Store
@@ -27,67 +27,93 @@ private def openData (args : Cli.Args) : Result DataDir := do
   let store ← Store.create (path / "store")
   pure { path, store }
 
-/-- The work directory: where the agent runs its commands, and nothing else. Every checkout
-wipes it and re-materializes it from a snapshot, so whatever is here that has not been captured
-into the store is lost. Selected by `--work` (default `.alaya-work`). -/
+/-- The work directory: where the agent runs its commands, and nothing else. It is always
+`DATA/work`, and it is the one place in the data directory that holds nothing durable — every
+checkout wipes it and re-materializes it from a snapshot, so whatever is in it that was not
+captured into the store is lost. Not configurable, so no path a user names can be destroyed by
+a checkout, and the store and the cache are out of its reach by construction. -/
 private structure WorkDir where
   path : System.FilePath
 
-/-- Whether either path is the other or contains it. -/
-private def overlapping (a b : System.FilePath) : Bool :=
-  a == b || a.toString.startsWith s!"{b.toString}/" || b.toString.startsWith s!"{a.toString}/"
-
-private def overlapError (work data : System.FilePath) : Error :=
-  .configuration <|
-    s!"--work {work} overlaps --data {data}: the work directory is wiped on every checkout, " ++
-    "so it must stay outside the directory that stores the trajectory tree"
-
-/-- Opens the work directory, refusing any path that overlaps `data` — the agent's directory is
-destroyed on every checkout and must never contain stored data. The check runs before the
-directory is created, so a rejected `--work` leaves nothing behind, and again after, since only
-a resolved path sees through symlinks. -/
-private def openWork (data : DataDir) (args : Cli.Args) : Result WorkDir := do
-  let requested : System.FilePath := ← args.valueD "work" ".alaya-work"
-  let dataPath ← Result.fromIO Error.storage (IO.FS.realPath data.path)
-  let cwd ← Result.fromIO Error.storage IO.currentDir
-  let absolute := if requested.isAbsolute then requested else cwd / requested
-  if overlapping absolute dataPath then throw (overlapError absolute dataPath)
-  Result.fromIO Error.storage (IO.FS.createDirAll absolute)
-  let path ← Result.fromIO Error.storage (IO.FS.realPath absolute)
-  if overlapping path dataPath then throw (overlapError path dataPath)
+private def openWork (data : DataDir) : Result WorkDir := do
+  let path := data.path / "work"
+  Result.fromIO Error.storage (IO.FS.createDirAll path)
   pure { path }
 
-private def runtimeFor (data : DataDir) (work : WorkDir) (args : Cli.Args) : Result Runtime := do
+/-- Where a run's commands go. A trajectory records the image its earlier turns ran in — and its
+root dialogue tells the model the `uname` of that image — so a continuation is pinned to it: the
+recorded image is used as given, and a `--image` that resolves to anything else is refused. -/
+private def executorFor (args : Cli.Args) (image? : Option String) (config : Config) :
+    Result Executor := do
+  match image? with
+  | none =>
+    if args.isSet "image" then
+      throw <| .configuration <|
+        "this trajectory runs on the host: it was created without --image, and its prompt " ++
+        "describes the host. Start a new one with `alaya root TASK PROJECT --image IMAGE`"
+    pure (Executor.local config)
+  | some pinned =>
+    let settings ← Docker.settingsFor args pinned
+    match ← Docker.settings? args with
+    | none => settings.verifyPresent
+    | some requested =>
+      let requested ← requested.pin
+      if requested.image != pinned then
+        throw <| .configuration <|
+          s!"--image resolves to {requested.image}, but this trajectory runs {pinned}; " ++
+          "a continuation has to run the same bits its earlier turns did"
+    Docker.executor settings config
+
+private def runtimeFor (data : DataDir) (work : WorkDir) (args : Cli.Args)
+    (image? : Option String) : Result Runtime := do
   let spec ← args.require "model" "e.g. --model yunwu:gpt-5.6-luna"
   let temperature ← args.floatD "temperature" 0.0
   let model ← buildModel spec temperature data.cache (← Provider.Options.ofArgs args)
-  pure { model, store := data.store, workDir := work.path, config := { task := "" } }
+  let config : Config := { task := "" }
+  let executor ← executorFor args image? config
+  pure { model, store := data.store, workDir := work.path, executor, config }
+
+/-- The `uname` a new trajectory's prompt is built from, and the image it is pinned to: read
+from the container when `--image` is given, from the host otherwise. -/
+private def rootEnvironment (args : Cli.Args) : Result (Uname × Option String) := do
+  match ← Docker.settings? args with
+  | none => pure (← Result.fromIO Error.configuration Uname.local, none)
+  | some settings =>
+    let settings ← settings.pin
+    pure (← Docker.uname settings, some settings.image)
 
 private def modelSpecOf (args : Cli.Args) : String := args.getD "model" ""
 
-private def run (argv : List String) : Result Unit := do
+private def dispatch (argv : List String) : Result Unit := do
   let args := Cli.parse argv (aliases := [("-m", "note")])
   match args.positional.toList with
   | ["root", task, project] =>
     let data ← openData args
-    let hash ← createRoot data.store { task } project
+    let (uname, image?) ← rootEnvironment args
+    let hash ← createRoot data.store { task } project uname image?
     emit hash.hex
   | "resume" :: pfx :: _ =>
     let data ← openData args
-    let rt ← runtimeFor data (← openWork data args) args
     let start ← resolve data.store pfx
-    let final ← resume rt (modelSpecOf args) start fun child => do
-      let state ← getState data.store child
-      let mark := match state.outcome? with | some o => s!"  [{o.status}]" | none => ""
-      emit s!"{child.hex}{mark}"
-    match (← getState data.store final).outcome? with
-    | some o => emit s!"done: {o.status}"
-    | none => pure ()
+    let rt ← runtimeFor data (← openWork data) args (← getState data.store start).image?
+    try
+      let final ← resume rt (modelSpecOf args) start fun child => do
+        let state ← getState data.store child
+        let mark := match state.outcome? with | some o => s!"  [{o.status}]" | none => ""
+        emit s!"{child.hex}{mark}"
+      match (← getState data.store final).outcome? with
+      | some o => emit s!"done: {o.status}"
+      | none => pure ()
+    finally
+      Result.fromIO Error.storage rt.executor.close
   | "step" :: pfx :: _ =>
     let data ← openData args
-    let rt ← runtimeFor data (← openWork data args) args
-    let child ← stepOnce rt (modelSpecOf args) (← resolve data.store pfx)
-    emit child.hex
+    let parent ← resolve data.store pfx
+    let rt ← runtimeFor data (← openWork data) args (← getState data.store parent).image?
+    try
+      emit (← stepOnce rt (modelSpecOf args) parent).hex
+    finally
+      Result.fromIO Error.storage rt.executor.close
   | ["commit", pfx, dir] =>
     let data ← openData args
     let hash ← commit data.store (← resolve data.store pfx) dir ((args.get? "note").filter (!·.isEmpty))
@@ -114,10 +140,10 @@ private def run (argv : List String) : Result Unit := do
     throw <| .configuration <|
       "usage: alaya (root TASK PROJECT | resume HASH --model P:M | step HASH --model P:M | " ++
       "commit HASH DIR [-m NOTE] | checkout HASH DIR | tree | show HASH | diff A B | rm HASH) " ++
-      "[--data D] [--work W] [--temperature T] [--url U] [--port N]"
+      "[--data D] [--temperature T] [--url U] [--port N] [--image IMAGE] [--network N]"
 
 def main (args : List String) : IO UInt32 := do
-  match ← (run args).toBaseIO with
+  match ← (dispatch args).toBaseIO with
   | .ok () => pure 0
   | .error error =>
     IO.eprintln s!"error: {error.describe}"

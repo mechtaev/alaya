@@ -118,6 +118,10 @@ structure State where
   outcome? : Option Outcome := none
   /-- Provenance: the model spec that produced this turn, or an intervention note. -/
   note? : Option String := none
+  /-- The pinned container image the commands of this trajectory run in, inherited from the
+  parent, or `none` when it runs on the host. Recorded so a continuation runs the same bits the
+  earlier turns did — and so the `uname` frozen into the root dialogue stays true. -/
+  image? : Option String := none
   deriving Inhabited
 
 namespace State
@@ -140,7 +144,8 @@ def toJson (state : State) : Lean.Json :=
     ("commands", .arr (state.commands.map fun c =>
       .mkObj [("command", c.command), ("returncode", (c.returncode : Lean.Json))])),
     ("outcome", state.outcome?.map outcomeToJson |>.getD .null),
-    ("note", state.note?.map Lean.Json.str |>.getD .null)]
+    ("note", state.note?.map Lean.Json.str |>.getD .null),
+    ("image", state.image?.map Lean.Json.str |>.getD .null)]
 
 def fromJson (json : Lean.Json) : Except String State := do
   let parent? := (json.getObjVal? "parent" >>= Lean.Json.getStr?).toOption.map (⟨·⟩)
@@ -158,7 +163,9 @@ def fromJson (json : Lean.Json) : Except String State := do
     | .ok o => some <$> outcomeFromJson o
     | .error _ => pure none
   let note? := (json.getObjVal? "note" >>= Lean.Json.getStr?).toOption
-  pure { parent?, env, kind, appended, commands, outcome?, note? }
+  -- Absent in states written before images were recorded, which is exactly `none`.
+  let image? := (json.getObjVal? "image" >>= Lean.Json.getStr?).toOption
+  pure { parent?, env, kind, appended, commands, outcome?, note?, image? }
 
 end State
 
@@ -273,6 +280,8 @@ def advance (rt : Runtime) (modelSpec : String) (parent : Hash) (dialogue : Dial
     (env : Hash) (consecutiveFormatErrors : Nat) :
     Result (Hash × Dialogue × Hash × Nat × Option Outcome) := do
   let childCount := (← children rt.store parent).size
+  -- Children run in whatever the parent ran in; the image is a property of the trajectory.
+  let image? := (← getState rt.store parent).image?
   let stream ← rt.model.sample { messages := dialogue, tools := #[bashTool] }
   let responses ← stream.nextN (childCount + 1)
   let response ← match responses[childCount]? with
@@ -290,7 +299,7 @@ def advance (rt : Runtime) (modelSpec : String) (parent : Hash) (dialogue : Dial
     let appended := #[Chat.Message.user message]
     let child ← putState rt.store {
       parent? := some parent, env, kind := .formatError, appended,
-      outcome?, note? := some modelSpec }
+      outcome?, note? := some modelSpec, image? }
     pure (child, dialogue ++ appended, env, consecutiveFormatErrors, outcome?)
   | .actions actions =>
     let assistant := assistantOf response
@@ -309,7 +318,7 @@ def advance (rt : Runtime) (modelSpec : String) (parent : Hash) (dialogue : Dial
     let appended := #[assistant] ++ observations
     let child ← putState rt.store {
       parent? := some parent, env, kind := .agent, appended, commands,
-      outcome? := submitted, note? := some modelSpec }
+      outcome? := submitted, note? := some modelSpec, image? }
     pure (child, dialogue ++ appended, env, 0, submitted)
 
 /-- Materializes `state`'s workspace into `rt.workDir`, replacing whatever is there. -/
@@ -347,18 +356,22 @@ partial def resume (rt : Runtime) (modelSpec : String) (hash : Hash)
 
 /-- Creates a root state from the initial project directory: the system+instance dialogue and a
 snapshot of `project`. -/
-def createRoot (store : Store) (config : Config) (project : System.FilePath) : Result Hash := do
-  let dialogue ← Result.fromIO Error.configuration (initialDialogue config)
+def createRoot (store : Store) (config : Config) (project : System.FilePath)
+    (uname : Uname) (image? : Option String := none) : Result Hash := do
   let env ← store.snapshot project
-  putState store { parent? := none, env, kind := .root, appended := dialogue, note? := some config.task }
+  putState store {
+    parent? := none, env, kind := .root, appended := initialDialogue config uname
+    note? := some config.task, image? }
 
 /-- Records a hand-edited workspace `dir` as an intervention child of `hash`: same dialogue, new
 workspace snapshot, marked distinctly. -/
 def commit (store : Store) (hash : Hash) (dir : System.FilePath) (note? : Option String) :
     Result Hash := do
-  let _ ← getState store hash
+  let parent ← getState store hash
   let env ← store.snapshot dir
-  putState store { parent? := some hash, env, kind := .intervention, appended := #[], note? }
+  putState store {
+    parent? := some hash, env, kind := .intervention, appended := #[], note?
+    image? := parent.image? }
 
 /-! ## Rendering -/
 
@@ -415,6 +428,7 @@ def showLines (store : Store) (hash : Hash) : Result (Array String) := do
     s!"parent   {state.parent?.map (·.hex) |>.getD "(root)"}",
     s!"env      {state.env.hex}"]
   if let some note := state.note? then lines := lines.push s!"note     {note}"
+  if let some image := state.image? then lines := lines.push s!"image    {image}"
   if let some o := state.outcome? then
     lines := lines.push s!"outcome  {o.status}"
     if o.submission != "" then lines := lines.push s!"submission:\n{o.submission}"

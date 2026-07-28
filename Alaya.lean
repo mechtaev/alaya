@@ -11,3 +11,4 @@ import Alaya.Chat.Schema
 import Alaya.Agent
 import Alaya.Agent.MiniSwe
 import Alaya.Agent.MiniSwe.Session
+import Alaya.Agent.MiniSwe.Docker

@@ -73,7 +73,7 @@ adds a child. Hashes are what you pass to commands; copy them from `alaya tree` 
 them to any unambiguous prefix.
 
 ```
-alaya root TASK PROJECT                          create a root state from a project directory
+alaya root TASK PROJECT [--image IMAGE]          create a root state from a project directory
 alaya resume HASH --model P:M                    grow one continuation to completion
 alaya step   HASH --model P:M                    advance exactly one model turn
 alaya commit HASH DIR [-m NOTE]                  record a hand-edited workspace as a child
@@ -84,20 +84,55 @@ alaya diff A B                                   workspace changes between two s
 alaya rm HASH                                    delete a subtree and reclaim blobs
 ```
 
-### Two directories, kept strictly apart
+### The data directory
 
-| Flag       | Default       | Contents                                                       |
-| ---------- | ------------- | -------------------------------------------------------------- |
-| `--data D` | `.alaya`      | everything durable: the store (`D/store`) and model cache (`D/cache`) |
-| `--work W` | `.alaya-work` | the directory the agent runs its commands in                    |
+`--data D` (default `.alaya`) is the only directory flag, and it holds everything:
 
-`--data` is the only place anything is kept. It must sit outside `PROJECT`, since the store
-cannot live inside the tree it snapshots.
+| Path      | Contents                                                                      |
+| --------- | ----------------------------------------------------------------------------- |
+| `D/store` | the content-addressed store: every state, dialogue, and workspace snapshot     |
+| `D/cache` | cached model responses                                                        |
+| `D/work`  | the directory the agent runs its commands in                                  |
 
-`--work` holds nothing durable. Every turn begins by **wiping it** and re-materializing the
-parent state's snapshot into it, so anything there that was not captured into the store is lost.
-Only `resume` and `step` use it, and `alaya` refuses a `--work` that is inside `--data`, or that
-contains it. Give concurrent runs separate work directories.
+So a run is one directory you can archive or delete as a unit. It must sit outside `PROJECT`,
+since the store cannot live inside the tree it snapshots.
+
+`D/work` is the one part that holds nothing durable, and it is not configurable. Every turn
+begins by **wiping it** and re-materializing the parent state's snapshot into it, so anything
+there that was not captured into the store is lost — which is exactly why no path you name can
+end up as the work directory. Only `resume` and `step` touch it. Concurrent runs need separate
+`--data` directories.
+
+### Running in a container
+
+`alaya root TASK PROJECT --image IMAGE` pins the trajectory to a container image; every command
+of every continuation then runs in it. `D/work` is bind-mounted at `/workspace`, so the snapshot
+that defines a state is still a host directory and the tree, `diff`, `checkout`, and branching
+are unchanged.
+
+| Flag                | Meaning                                                            |
+| ------------------- | ------------------------------------------------------------------ |
+| `--image IMAGE`     | image to run in; only on `root` (and see the pinning rule below)    |
+| `--container-user U`| `uid:gid` to run as; defaults to your own on Linux, the image's on macOS |
+| `--network N`       | passed to `docker run --network`; e.g. `none` to cut off the network |
+
+**The image is a property of the trajectory, not of an invocation.** It is resolved to a digest
+at `root` time (`alpine@sha256:…`, or the image id for a locally built one) and recorded in
+every state, because the root prompt tells the model the `uname` of the machine it is on — read
+from the image, not from your laptop. `resume` and `step` therefore need no flags: they use the
+recorded image, and refuse a `--image` that resolves to anything else. `alaya show` prints it.
+
+One container is started per run and each command goes through `docker exec`, so an install in
+one command is visible to the next, as in mini. What that costs: **only `/workspace` is part of
+a state.** Packages installed into the image's filesystem live as long as the run and are gone
+when a branch is resumed later. Anything that must survive branching belongs in the workspace or
+in the image.
+
+Timeouts are enforced inside the container with `timeout(1)` when the image has one, so a
+runaway command's whole process group dies as it does locally; a host-side deadline kills the
+container as a backstop, and the next command starts a fresh one. Docker's own failures (a
+missing image, a dead daemon) become exception observations rather than crashing the run, and
+the container is removed when the run ends.
 
 ### Sampling, caching, and branching
 
@@ -113,10 +148,10 @@ sibling, and an interrupted run resumes without re-billing the turns it already 
 ```sh
 export DGX_API_KEY=EMPTY
 
-# Snapshot a project as the root of a new trajectory.
-root=$(alaya root "make the test suite pass" ./myproject)
+# Snapshot a project as the root of a new trajectory, pinned to an image to run in.
+root=$(alaya root "make the test suite pass" ./myproject --image python:3.12-slim)
 
-# Run to completion, printing each new state as it appears.
+# Run to completion, printing each new state as it appears. The image comes from the state.
 alaya resume "$root" --model dgx:gpt-oss-120b --url spark.local:9000
 
 alaya tree                       # the forest, with each state's kind and outcome
@@ -131,8 +166,9 @@ alaya resume <new-hash> --model dgx:gpt-oss-120b
 alaya rm 4f2c                    # drop a subtree and garbage-collect its blobs
 ```
 
-Every command takes `--data`; `resume` and `step` additionally take `--work`, `--model`,
-`--temperature`, and the DGX flags `--url`/`--port`.
+Every command takes `--data`. `root` additionally takes `--image` (with `--container-user` and
+`--network`); `resume` and `step` take `--model`, `--temperature`, and the DGX flags
+`--url`/`--port`.
 
 ## `benchmark`
 

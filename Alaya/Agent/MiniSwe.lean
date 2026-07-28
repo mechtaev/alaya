@@ -14,7 +14,10 @@ protocol, and the step / consecutive-format-error limits.
 The one adaptation is the environment: mini runs each command in a persistent working
 directory; here the working directory is snapshotted into a `Cas.Store` after every command, so
 the environment is a content-addressed value (`Cas.Hash`) that can be branched and replayed —
-exactly the `Dialogue × Env` state from `Alaya.Agent`. The commands themselves run identically:
+exactly the `Dialogue × Env` state from `Alaya.Agent`. Where the commands run is an `Executor`:
+on the host, or (see `Alaya.Agent.MiniSwe.Docker`) in a container with that same directory
+bind-mounted, which changes nothing about what a state is. The commands themselves run
+identically:
 an `exec /bin/sh -c "$@" 2>&1` trampoline reproduces `Popen(command, shell=True,
 stderr=STDOUT)` byte-for-byte (the inner shell sees exactly mini's argv, so error messages and
 line numbers match; stderr is merged at the fd level; stdin is inherited), with the inherited
@@ -31,6 +34,11 @@ Python error string this port cannot reproduce: JSON parse errors in tool argume
 Lean's parser message (not `json.JSONDecodeError`'s), and spawn failures carry Lean's
 `IO.Error` text (not Python's exception text). `tojson`'s `ensure_ascii` uses `\uXXXX`;
 non-ASCII bytes match, astral characters are emitted as surrogate pairs.
+
+One further deviation applies only to the container executor: mini's environment persists
+everything a command does, while a snapshot captures only the working directory, so changes
+outside it (installed packages, `/tmp`) live as long as the run but are not part of a state and
+are gone when a branch is resumed later.
 -/
 
 namespace Alaya.Agent.MiniSwe
@@ -249,8 +257,34 @@ def submission? (output : String) (returncode : Int) : Option String :=
 
 /-! ## Environment: Cas-backed command execution -/
 
-/-- The live run: the model stack, and the two directories a run keeps strictly apart —
-`store`, holding every durable artefact, and `workDir`, holding none. -/
+/-- The `uname` fields `instanceMessage` is built from, read from wherever commands actually run
+— the host for a local executor, the image for a container one. Getting this from the wrong
+place tells the model it is on another operating system, and (for `Darwin`) hands it the BSD
+`sed` note, so it is part of the executor rather than something the prompt looks up itself. -/
+structure Uname where
+  system : String
+  release : String
+  version : String
+  machine : String
+  deriving Repr, Inhabited, BEq
+
+/-- Where the agent's commands run. The workspace is always the host directory the runtime
+snapshots — a container gets it bind-mounted — so the executor never changes what a state *is*:
+everything outside that directory is disposable either way. -/
+structure Executor where
+  /-- Runs mini's inner argv in `workDir` with stderr merged, as `Popen(shell=True)` would.
+  `display` is the command as it appears in messages. Like mini, a failure to execute is an
+  observation with `exceptionInfo`, never a raised error. -/
+  exec : (workDir : System.FilePath) -> (argv : Array String) -> (display : String) -> IO Output
+  /-- `uname` where the commands run. -/
+  uname : IO Uname
+  /-- The pinned image commands run in, recorded in the trajectory; `none` on the host. -/
+  image? : Option String := none
+  /-- Releases what the executor holds — a container, say — at the end of a run. -/
+  close : IO Unit := pure ()
+
+/-- The live run: the model stack, the store holding every durable artefact, the working
+directory holding none, and the executor that runs commands in it. -/
 structure Runtime where
   model : Model
   /-- Where everything durable lives. Written only through the content-addressed store's own
@@ -259,15 +293,9 @@ structure Runtime where
   /-- Where the agent runs its commands. Wiped and re-materialized from a snapshot at every
   checkout, so nothing here survives a turn that is not first captured into `store`. -/
   workDir : System.FilePath
+  /-- How commands run: on the host, or in a container with `workDir` bind-mounted. -/
+  executor : Executor
   config : Config
-
-/-- Opens a store and working directory for a run. `storeRoot` must be outside `workDir`, which
-is destroyed and rebuilt on every checkout. -/
-def Runtime.create (model : Model) (config : Config)
-    (workDir storeRoot : System.FilePath) : Result Runtime := do
-  let store ← Cas.Store.create storeRoot
-  Result.fromIO Error.storage (IO.FS.createDirAll workDir)
-  pure { model, store, workDir, config }
 
 /-- For a UTF-8 lead byte: the sequence length and the valid range of the first continuation
 byte (later continuations are always `0x80`–`0xBF`), or `none` for an invalid lead. -/
@@ -363,39 +391,64 @@ private partial def pollExit (tryWait : IO (Option UInt32)) (kill : IO Unit) (wa
       IO.sleep 20
       pollExit tryWait kill wait readAll deadlineMs timeoutSeconds command
 
-/-- Runs one shell invocation exactly like mini's `LocalEnvironment`, which execs
-`["/bin/sh", "-c"] ++ argv` with stderr merged into stdout at the fd level. The
-`exec /bin/sh -c "$@" 2>&1` trampoline points stderr at the stdout pipe and then replaces
-itself with exactly that argv, so shell error messages and line numbers are byte-identical.
-Runs in the working directory with the inherited environment plus overrides, stdin inherited,
-in a fresh session so a timeout kills the whole process group. Spawn failures become exception
-observations, as mini catches every `Popen` error (`display` is the command as it appears in
-messages). -/
-def execShell (rt : Runtime) (argv : Array String) (display : String) : IO Output := do
-  -- Popen raises before running when `cwd` is unusable; Lean's spawn instead exits 255 from the
-  -- child, so the check happens here, with CPython's error text.
-  if !(← rt.workDir.isDir) then
-    let error := if (← rt.workDir.pathExists)
-      then s!"[Errno 20] Not a directory: '{rt.workDir}'"
-      else s!"[Errno 2] No such file or directory: '{rt.workDir}'"
-    return { output := "", returncode := -1,
-             exceptionInfo := s!"An error occurred while executing the command: {error}" }
-  try
-    let child ← IO.Process.spawn {
-      cmd := "/bin/sh"
-      args := #["-c", "exec /bin/sh -c \"$@\" 2>&1", "sh"] ++ argv
-      cwd := some rt.workDir
-      setsid := true
-      stdin := .inherit, stdout := .piped, stderr := .null
-      env := rt.config.env.map fun (k, v) => (k, some v) }
-    let reader ← IO.asTask (prio := .dedicated) child.stdout.readBinToEnd
-    let readAll : IO String := do
-      pure (lossyDecodeUtf8 ((← IO.wait reader).toOption.getD ByteArray.empty))
-    let deadlineMs := (← IO.monoMsNow) + rt.config.timeoutSeconds * 1000
-    pollExit child.tryWait child.kill child.wait readAll deadlineMs rt.config.timeoutSeconds display
-  catch e =>
-    pure { output := "", returncode := -1,
-           exceptionInfo := s!"An error occurred while executing the command: {e}" }
+/-- The inner argv mini's `Popen(command, shell=True)` runs, wrapped in the trampoline that
+merges stderr into stdout at the fd level and then execs exactly that argv, so shell error
+messages and line numbers are byte-identical. Every executor uses it, so a container changes
+where the command runs and nothing about what it sees. -/
+def trampoline (argv : Array String) : Array String :=
+  #["-c", "exec /bin/sh -c \"$@\" 2>&1", "sh"] ++ argv
+
+/-- `uname` on the host, for the local executor. -/
+def Uname.local : IO Uname := do
+  let field (flag : String) : IO String := do
+    pure (← IO.Process.output { cmd := "uname", args := #[flag] }).stdout.trimAscii.toString
+  pure { system := ← field "-s", release := ← field "-r"
+         version := ← field "-v", machine := ← field "-m" }
+
+/-- Runs commands on the host, exactly like mini's `LocalEnvironment`: in the working directory
+with the inherited environment plus overrides, stdin inherited, in a fresh session so a timeout
+kills the whole process group. Spawn failures become exception observations, as mini catches
+every `Popen` error. -/
+def Executor.local (config : Config) : Executor where
+  uname := Uname.local
+  exec := fun workDir argv display => do
+    -- Popen raises before running when `cwd` is unusable; Lean's spawn instead exits 255 from
+    -- the child, so the check happens here, with CPython's error text.
+    if !(← workDir.isDir) then
+      let error := if (← workDir.pathExists)
+        then s!"[Errno 20] Not a directory: '{workDir}'"
+        else s!"[Errno 2] No such file or directory: '{workDir}'"
+      return { output := "", returncode := -1,
+               exceptionInfo := s!"An error occurred while executing the command: {error}" }
+    try
+      let child ← IO.Process.spawn {
+        cmd := "/bin/sh"
+        args := trampoline argv
+        cwd := some workDir
+        setsid := true
+        stdin := .inherit, stdout := .piped, stderr := .null
+        env := config.env.map fun (k, v) => (k, some v) }
+      let reader ← IO.asTask (prio := .dedicated) child.stdout.readBinToEnd
+      let readAll : IO String := do
+        pure (lossyDecodeUtf8 ((← IO.wait reader).toOption.getD ByteArray.empty))
+      let deadlineMs := (← IO.monoMsNow) + config.timeoutSeconds * 1000
+      pollExit child.tryWait child.kill child.wait readAll deadlineMs config.timeoutSeconds display
+    catch e =>
+      pure { output := "", returncode := -1,
+             exceptionInfo := s!"An error occurred while executing the command: {e}" }
+
+/-- Opens a store and working directory for a run. `storeRoot` must be outside `workDir`, which
+is destroyed and rebuilt on every checkout. Commands run on the host unless given an executor. -/
+def Runtime.create (model : Model) (config : Config)
+    (workDir storeRoot : System.FilePath) (executor : Executor := Executor.local config) :
+    Result Runtime := do
+  let store ← Cas.Store.create storeRoot
+  Result.fromIO Error.storage (IO.FS.createDirAll workDir)
+  pure { model, store, workDir, executor, config }
+
+/-- Runs one shell invocation where the runtime's executor puts it. -/
+def execShell (rt : Runtime) (argv : Array String) (display : String) : IO Output :=
+  rt.executor.exec rt.workDir argv display
 
 /-- Runs one string command (the common case of `execCommand`). -/
 def execBash (rt : Runtime) (command : String) : IO Output :=
@@ -428,15 +481,12 @@ def sample (rt : Runtime) (dialogue : Dialogue) : Result Chat.Response := do
 private def assistantOf (response : Chat.Response) : Chat.Message :=
   .assistant response.content? response.toolCalls
 
-/-- Builds the initial two-message dialogue (system + task), filling the system-information
-line from `uname`. -/
-def initialDialogue (config : Config) : IO Dialogue := do
-  let field (flag : String) : IO String := do
-    pure (← IO.Process.output { cmd := "uname", args := #[flag] }).stdout.trimAscii.toString
-  let system ← field "-s"
-  pure #[
-    .system systemMessage,
-    .user (instanceMessage config.task system (← field "-r") (← field "-v") (← field "-m"))]
+/-- The initial two-message dialogue (system + task). `uname` is passed in rather than looked up
+here because it describes where the commands will run, which is the executor's business, and
+because this dialogue is frozen into the root state at creation time. -/
+def initialDialogue (config : Config) (uname : Uname) : Dialogue :=
+  #[.system systemMessage,
+    .user (instanceMessage config.task uname.system uname.release uname.version uname.machine)]
 
 /-- The exact mini control loop over `Dialogue × Cas.Hash`. Mirrors `DefaultAgent.run`:
 limits are checked before each model call; a format error is appended as a user turn (the
@@ -475,7 +525,7 @@ private partial def loop (rt : Runtime) (dialogue : Dialogue) (env : Cas.Hash)
 /-- Runs the agent to completion, returning the final dialogue, the final environment snapshot,
 and the outcome. -/
 def run (rt : Runtime) : Result (Dialogue × Cas.Hash × Outcome) := do
-  let dialogue ← Result.fromIO Error.configuration (initialDialogue rt.config)
+  let dialogue := initialDialogue rt.config (← Result.fromIO Error.configuration rt.executor.uname)
   let env ← rt.store.snapshot rt.workDir
   loop rt dialogue env 0 0
 

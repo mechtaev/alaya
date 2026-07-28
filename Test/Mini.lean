@@ -307,7 +307,12 @@ private def cachedRuntime (responses : Array Chat.Response) : TestM Runtime := d
   let store ← assertOk <| Cas.Store.create ((← scratch) / "store")
   let work := (← scratch) / "work"
   assertOk <| Result.fromIO Error.storage (IO.FS.createDirAll work)
-  pure { model := cached, store, workDir := work, config := { task := "t" } }
+  let config : Config := { task := "t" }
+  pure { model := cached, store, workDir := work, config, executor := Executor.local config }
+
+/-- A fixed `uname`, so root states do not depend on the machine the tests run on. -/
+private def testUname : Uname :=
+  { system := "Linux", release := "6.1.0", version := "#1 SMP", machine := "x86_64" }
 
 private def emptyProject : TestM System.FilePath := do
   let proj := (← scratch) / "proj"
@@ -330,11 +335,26 @@ def sessionSuite : Suite := suite "mini.session" #[
         if (messageToJson back).compress != (messageToJson message).compress then
           throw <| IO.userError s!"round-trip mismatch: {(messageToJson back).compress}",
 
+  test "the image is recorded at the root and inherited by every child" do
+    let rt ← cachedRuntime #[responseWith #[call "c1" "bash" "echo hi"]]
+    let pinned := "example.test/img@sha256:0123456789abcdef"
+    let root ← assertOk <|
+      createRoot rt.store { task := "t" } (← emptyProject) testUname (some pinned)
+    assertEqual "root" (← assertOk (getState rt.store root)).image? (some pinned)
+    let child ← assertOk <| stepOnce rt "test:model" root
+    assertEqual "agent turn" (← assertOk (getState rt.store child)).image? (some pinned)
+    let edited ← emptyProject
+    let intervention ← assertOk <| commit rt.store child edited (some "by hand")
+    assertEqual "intervention" (← assertOk (getState rt.store intervention)).image? (some pinned)
+    -- A trajectory created without an image keeps running on the host.
+    let hostRoot ← assertOk <| createRoot rt.store { task := "t" } (← emptyProject) testUname
+    assertEqual "host root" (← assertOk (getState rt.store hostRoot)).image? none,
+
   test "resume drives to submission and records a chain" do
     let rt ← cachedRuntime #[
       responseWith #[call "c1" "bash" "echo hi > a.txt"],
       responseWith #[call "c2" "bash" "echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT"]]
-    let root ← assertOk <| createRoot rt.store { task := "t" } (← emptyProject)
+    let root ← assertOk <| createRoot rt.store { task := "t" } (← emptyProject) testUname
     let final ← assertOk <| resume rt "test:model" root (fun _ => pure ())
     let fstate ← assertOk <| getState rt.store final
     assertEqual "submitted" (fstate.outcome?.map (·.status)) (some "Submitted")
@@ -352,7 +372,7 @@ def sessionSuite : Suite := suite "mini.session" #[
     let rt ← cachedRuntime #[
       responseWith #[call "a" "bash" "echo one"],
       responseWith #[call "b" "bash" "echo two"]]
-    let root ← assertOk <| createRoot rt.store { task := "t" } (← emptyProject)
+    let root ← assertOk <| createRoot rt.store { task := "t" } (← emptyProject) testUname
     let dialogue ← assertOk (dialogueOf rt.store root)
     let env := (← assertOk (getState rt.store root)).env
     let (c1, _, _, _, _) ← assertOk <| advance rt "m" root dialogue env 0
@@ -367,7 +387,7 @@ def sessionSuite : Suite := suite "mini.session" #[
 
   test "commit records an intervention child sharing the parent dialogue" do
     let rt ← cachedRuntime #[]
-    let root ← assertOk <| createRoot rt.store { task := "t" } (← emptyProject)
+    let root ← assertOk <| createRoot rt.store { task := "t" } (← emptyProject) testUname
     let edit := (← scratch) / "edit"
     assertOk <| Result.fromIO Error.storage (IO.FS.createDirAll edit)
     assertOk <| Result.fromIO Error.storage (IO.FS.writeFile (edit / "planted.txt") "x")
@@ -384,7 +404,7 @@ def sessionSuite : Suite := suite "mini.session" #[
     let rt ← cachedRuntime #[
       responseWith #[call "a" "bash" "echo one"],
       responseWith #[call "b" "bash" "echo two"]]
-    let root ← assertOk <| createRoot rt.store { task := "t" } (← emptyProject)
+    let root ← assertOk <| createRoot rt.store { task := "t" } (← emptyProject) testUname
     let d0 ← assertOk (dialogueOf rt.store root)
     let e0 := (← assertOk (getState rt.store root)).env
     let (c1, d1, e1, _, _) ← assertOk <| advance rt "m" root d0 e0 0
@@ -398,7 +418,7 @@ def sessionSuite : Suite := suite "mini.session" #[
 
   test "resolve accepts an unambiguous hash prefix" do
     let rt ← cachedRuntime #[]
-    let root ← assertOk <| createRoot rt.store { task := "t" } (← emptyProject)
+    let root ← assertOk <| createRoot rt.store { task := "t" } (← emptyProject) testUname
     assertEqual "prefix resolves" (← assertOk (resolve rt.store (String.ofList (root.hex.toList.take 10)))) root
 ]
 
