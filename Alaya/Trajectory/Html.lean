@@ -1,21 +1,28 @@
-import Alaya.Agent.MiniSwe.Session
+import Alaya.Trajectory
 
 /-!
 A standalone HTML report of a whole trajectory forest.
 
-Everything a data directory holds — the tree, each state's metadata, the messages it appended,
-the workspace changes it made, and any verdict recorded against it — is serialized into one
+Everything a data directory holds — the tree, each state's metadata, the events it appended, the
+workspace changes it made, and any verdict recorded against it — is serialized into one
 self-contained file: the data as JSON in a `<script>` tag, with the page that renders it. No
 network, no assets, so a report can be mailed, archived, or opened from a container.
+
+The page shows two things side by side and keeps them apart, as the agent API does: each
+state's *events* — what happened, as recorded — and, on request, the *view* — the exact context
+the model is sent from that state, produced by the agent's view function. The report depends on
+the agent for nothing else: it takes the view and the tool list, and renders everything by its
+generic shape.
 
 Workspace changes carry the text of the files they touch when that is cheap (small, textual, and
 not obviously machine-generated), so the report can show a line diff rather than just a list of
 paths. The limits below keep a report from growing with an agent's virtual environment.
 -/
 
-namespace Alaya.Agent.MiniSwe.Html
+namespace Alaya.Trajectory.Html
 
 open Alaya (Result Error)
+open Alaya.Agent (Event Log View)
 open Alaya.Cas (Hash Store Change)
 
 /-- Paths under these are listed but never carried, and never diffed line by line. -/
@@ -74,28 +81,42 @@ private def changeJson (store : Store) (before? : Option Hash) (after? : Option 
     ("old", old.map Lean.Json.str |>.getD .null),
     ("new", new.map Lean.Json.str |>.getD .null)]
 
-private def messageJson (message : Chat.Message) : Lean.Json :=
-  match message with
-  | .system content => .mkObj [("role", "system"), ("content", content)]
-  | .user content => .mkObj [("role", "user"), ("content", content)]
-  | .assistant content? calls =>
-    .mkObj [
-      ("role", "assistant"),
-      ("content", content?.map Lean.Json.str |>.getD .null),
-      ("calls", .arr (calls.map fun call =>
-        .mkObj [
-          ("name", call.name),
-          ("command", match call.arguments.getObjVal? "command" with
-            | .ok (.str command) => command
-            | _ => call.invalidArguments?.getD call.arguments.compress)]))]
-  | .tool _ content => .mkObj [("role", "tool"),
-      ("content", match content with | .str text => text | other => other.compress)]
+private def callJson (call : Chat.ToolCall) : Lean.Json :=
+  .mkObj [
+    ("id", call.id), ("name", call.name),
+    ("arguments", call.invalidArguments?.map Lean.Json.str |>.getD call.arguments),
+    ("summary", argumentsSummary call)]
 
-private def stateJson (store : Store) (hidden : Array String) (hash : Hash) :
+/-- An event by its generic shape: who, what was said, which calls, what came back. -/
+private def eventJson : Event -> Lean.Json
+  | .message m =>
+    match m with
+    | .system c => .mkObj [("type", "message"), ("role", "system"), ("content", c)]
+    | .user c => .mkObj [("type", "message"), ("role", "user"), ("content", c)]
+    | .assistant c? calls reasoning? => .mkObj [
+        ("type", "message"), ("role", "assistant"),
+        ("content", c?.map Lean.Json.str |>.getD .null),
+        ("reasoning", reasoning?.map Lean.Json.str |>.getD .null),
+        ("calls", .arr (calls.map callJson))]
+    | .tool id content => .mkObj [
+        ("type", "message"), ("role", "tool"), ("callId", id), ("content", content)]
+  | .response r => .mkObj [
+      ("type", "response"),
+      ("content", r.content?.map Lean.Json.str |>.getD .null),
+      ("reasoning", r.reasoning?.map Lean.Json.str |>.getD .null),
+      ("finishReason", r.finishReason?.map Lean.Json.str |>.getD .null),
+      ("calls", .arr (r.toolCalls.map callJson))]
+  | .observation id content => .mkObj [
+      ("type", "observation"), ("callId", id), ("content", content)]
+
+private def wireOf (dialogue : Array Chat.Message) : Array String :=
+  dialogue.map fun m => m.toJson.compress
+
+private def stateJson (store : Store) (view : View) (hidden : Array String) (hash : Hash) :
     Result Lean.Json := do
-  let state ← Session.getState store hash
+  let state ← getState store hash
   let parentEnv? ← match state.parent? with
-    | some parent => pure (some (← Session.getState store parent).env)
+    | some parent => pure (some (← getState store parent).env)
     | none => pure none
   let changes ← match parentEnv? with
     | none => pure #[]
@@ -128,6 +149,17 @@ private def stateJson (store : Store) (hidden : Array String) (hash : Hash) :
         ("command", e.command), ("returncode", (e.returncode : Lean.Json)),
         ("elapsedMs", (e.elapsedMs : Lean.Json)), ("output", e.output),
         ("passed", e.passed)]
+  -- The context the model is sent from this state, as the view makes it. A state carries only
+  -- what its own turn added to the parent's context when the view extended it — the common
+  -- case, and linear in the forest — and the whole context when the view rewrote earlier
+  -- messages, which a view that elides old output does. The page assembles the rest.
+  let full := view (← logOf store hash)
+  let parentView ← match state.parent? with
+    | some parent => pure (view (← logOf store parent))
+    | none => pure #[]
+  let extended := full.size >= parentView.size &&
+    wireOf (full.extract 0 parentView.size) == wireOf parentView
+  let wire := if extended then full.extract parentView.size full.size else full
   pure <| .mkObj [
     ("hash", hash.hex),
     ("parent", state.parent?.map (Lean.Json.str ·.hex) |>.getD .null),
@@ -140,12 +172,14 @@ private def stateJson (store : Store) (hidden : Array String) (hash : Hash) :
       | none => .null
       | some o => .mkObj [("status", o.status), ("submission", o.submission)]),
     ("evaluation", evaluation),
-    ("commands", .arr (state.commands.map fun command =>
-      .mkObj [
-        ("command", match command.command with
-          | .str text => text | other => other.compress),
-        ("returncode", (command.returncode : Lean.Json))])),
-    ("messages", .arr (state.appended.map messageJson)),
+    ("question", state.question?.map (fun q => Lean.Json.mkObj [("callId", q.callId), ("text", q.text)])
+      |>.getD .null),
+    ("intervention", state.intervention?.map (fun i => Lean.Json.mkObj [
+      ("message", i.message), ("changed", .arr (i.changed.map Lean.Json.str))]) |>.getD .null),
+    ("events", .arr (state.appended.map eventJson)),
+    ("wire", .arr (wire.map Chat.Message.toJson)),
+    ("wireFull", !extended),
+    ("wireOwn", ((full.size - parentView.size) : Lean.Json)),
     ("changes", .arr changesJson),
     ("folded", .arr foldedJson),
     ("listedCount", (listed.size : Lean.Json)),
@@ -193,11 +227,13 @@ height:14px;color:#5a6570;cursor:pointer;user-select:none}
 .hash{color:#8a6d3b}
 .ic{flex:none;display:inline-flex;align-items:center;justify-content:center;width:16px;
 height:14px;margin-right:5px}
-.i-root{color:#4a4a4a}.i-agent{color:#3a6ea5}.i-format_error{color:#b04a4a}
+.i-root{color:#4a4a4a}.i-turn{color:#3a6ea5}
 .i-intervention{color:#7a5aa5}.i-pass{color:#2f7d4f}.i-fail{color:#b02020}
+.i-message{color:#7a5aa5}.i-question{color:#c07a1a}.i-reply{color:#2f7d4f}
 .chip{display:inline-block;padding:0 6px;border-radius:9px;font-size:11px;margin-left:6px;
 background:#eee;color:#444}
 .chip.ok{background:#d8f0dd;color:#1c5c33}.chip.bad{background:#f7dcdc;color:#8a2b2b}
+.chip.wait{background:#fbe9cf;color:#7a4a08}
 table.meta{border-collapse:collapse;margin-bottom:4px}
 table.meta td{padding:2px 14px 2px 0;vertical-align:top}
 table.meta td:first-child{color:#777;white-space:nowrap}
@@ -205,9 +241,13 @@ table.meta td:first-child{color:#777;white-space:nowrap}
 .msg>.head{padding:4px 9px;background:#f4f6f8;font-size:11px;text-transform:uppercase;
 letter-spacing:.04em;color:#555;border-bottom:1px solid #e3e3e3}
 .msg>.body{padding:8px 10px}
+.msg .head .id{margin-left:10px;color:#8a94a0;text-transform:none;letter-spacing:0}
 pre{margin:0;white-space:pre-wrap;word-break:break-word}
 .cmd{background:#1f2430;color:#e6e6e6;padding:8px 10px;border-radius:4px;margin:6px 0}
 .cmd .rc{float:right;color:#9fb3c8}
+.cmd .name{color:#9fb3c8;margin-right:8px}
+.field{margin:4px 0}
+.field .key{color:#777;font-size:11px;text-transform:uppercase;letter-spacing:.04em}
 .fold{position:relative}
 .fold.closed .clip{max-height:16em;overflow:hidden}
 .fold.closed .clip:after{content:'';position:absolute;left:0;right:0;bottom:26px;height:40px;
@@ -227,7 +267,25 @@ border-radius:3px;cursor:pointer;color:#444}
 color:#999;text-align:center}
 .muted{color:#888}
 .big{color:#888;font-style:italic;padding:6px 9px}
-.file.folded{padding:5px 9px;background:#f7f8fa;color:#777}"
+.file.folded{padding:5px 9px;background:#f7f8fa;color:#777}
+.headbar{display:flex;align-items:center;gap:10px;margin-bottom:10px}
+.headbar h1{margin:0}
+/* The model's context, in a modal over the page: what a continuation from the selected state
+   is sampled from, in the form the provider receives. */
+#modal{position:fixed;inset:0;z-index:10;display:flex;align-items:center;justify-content:center;
+background:rgba(20,24,32,.55)}
+#modal.hide{display:none}
+#modal .win{width:min(1100px,94vw);height:min(90vh,1400px);display:flex;flex-direction:column;
+background:#fff;border-radius:6px;box-shadow:0 10px 40px rgba(0,0,0,.35)}
+#modal .bar{display:flex;gap:6px;align-items:center;padding:8px 12px;background:#f4f6f8;
+border-bottom:1px solid #e3e3e3;border-radius:6px 6px 0 0}
+#modal .ttl{flex:1;min-width:0;font-weight:600;overflow:hidden;text-overflow:ellipsis;
+white-space:nowrap}
+#modal-body{flex:1;overflow:auto;padding:12px 16px}
+#modal-body .note{color:#666;font-size:12px;margin:0 0 10px}
+.msg.mine{border-left:3px solid #3a6ea5}
+.divider{margin:16px 0 6px;padding-top:4px;border-top:1px dashed #3a6ea5;color:#3a6ea5;
+font-size:11px;text-transform:uppercase;letter-spacing:.04em}"
 
 private def script : String :=
 "const data = JSON.parse(document.getElementById('data').textContent);
@@ -235,6 +293,16 @@ const byHash = new Map(data.states.map(s => [s.hash, s]));
 const short = h => h.slice(0, 12);
 const el = (tag, cls, text) => { const n = document.createElement(tag);
   if (cls) n.className = cls; if (text !== undefined) n.textContent = text; return n; };
+const flat = (s, n = 70) => { s = String(s).replace(/\\s+/g, ' '); return s.length > n ? s.slice(0, n - 3) + '...' : s; };
+
+/** The first tool call of a state's turn, as `name  arguments`. */
+function firstCall(state) {
+  for (const e of state.events || []) {
+    const calls = e.calls || [];
+    if ((e.type === 'response' || e.role === 'assistant') && calls.length) return calls[0];
+  }
+  return null;
+}
 
 function summary(state) {
   if (state.kind === 'root') return state.note || 'root';
@@ -243,9 +311,14 @@ function summary(state) {
     return (e.passed ? 'pass' : 'fail ' + e.returncode) + '  ' + (e.command || '');
   }
   if (state.kind === 'intervention') return state.note || 'commit';
-  if (state.kind === 'format_error') return 'format error';
-  const c = (state.commands || [])[0];
-  return c ? c.command.replace(/\\s+/g, ' ') : '(no command)';
+  if (state.kind === 'message') return (state.intervention || {}).message || 'message';
+  if (state.kind === 'reply') {
+    const e = (state.events || [])[0];
+    return 'reply: ' + (e && typeof e.content === 'string' ? e.content : JSON.stringify(e && e.content));
+  }
+  const call = firstCall(state);
+  const asked = state.kind === 'question' ? ' ask: ' + ((state.question || {}).text || '') : '';
+  return (call ? call.name + '  ' + flat(call.summary) : '(no tool call)') + asked;
 }
 
 /* --- the tree ---------------------------------------------------------
@@ -276,14 +349,17 @@ const nodes = new Map();     // hash -> {row, rest, twisty, built, open}
 const ROWS_AT_ONCE = 300;    // how much of a chain one expansion follows
 const ROWS_AT_START = 300;   // how much of the forest is open when the page loads
 
-/* A glyph per kind, on a 14x14 grid: a seed for a root, a prompt for an agent turn, a warning
-   for a format error, a diamond for a hand-made commit, and a tick or cross for a verdict. */
+/* A glyph per kind, on a 14x14 grid: a seed for a root, a prompt for a turn, a diamond for a
+   hand-made commit, a bubble for a message, a question mark, a return arrow for a reply, and a
+   tick or cross for a verdict. */
 const GLYPHS = {
   root: '<circle cx=\"7\" cy=\"7\" r=\"2.6\"/><circle cx=\"7\" cy=\"7\" r=\"5.6\" fill=\"none\"/>',
-  agent: '<path d=\"M2.5 3.5L6 7l-3.5 3.5\" fill=\"none\"/><path d=\"M7.5 10.5h4\" fill=\"none\"/>',
-  format_error: '<path d=\"M7 1.8L13 12H1z\" fill=\"none\"/><path d=\"M7 5.4v3\" fill=\"none\"/>' +
-    '<circle cx=\"7\" cy=\"10.4\" r=\".8\" stroke=\"none\"/>',
+  turn: '<path d=\"M2.5 3.5L6 7l-3.5 3.5\" fill=\"none\"/><path d=\"M7.5 10.5h4\" fill=\"none\"/>',
   intervention: '<path d=\"M7 1.6L12.4 7 7 12.4 1.6 7z\" fill=\"none\"/>',
+  message: '<path d=\"M2 3h10v6H6l-3 2.5V9H2z\" fill=\"none\"/>',
+  question: '<path d=\"M4.6 5.3a2.4 2.4 0 1 1 3.3 2.2c-.6.3-.9.7-.9 1.4\" fill=\"none\"/>' +
+    '<circle cx=\"7\" cy=\"11.2\" r=\".8\" stroke=\"none\"/>',
+  reply: '<path d=\"M6 3.5L2.5 7 6 10.5\" fill=\"none\"/><path d=\"M2.5 7h5.5a3 3 0 0 1 3 3v1.5\" fill=\"none\"/>',
   pass: '<path d=\"M2.2 7.4l3.3 3.3L11.8 4\" fill=\"none\"/>',
   fail: '<path d=\"M3.2 3.2l7.6 7.6M10.8 3.2l-7.6 7.6\" fill=\"none\"/>'
 };
@@ -300,7 +376,7 @@ function icon(state) {
     ? 'evaluation: ' + (key === 'pass' ? 'passed' : 'failed') : state.kind;
   holder.innerHTML = '<svg viewBox=\"0 0 14 14\" width=\"13\" height=\"13\" ' +
     'stroke=\"currentColor\" stroke-width=\"1.5\" stroke-linecap=\"round\" ' +
-    'stroke-linejoin=\"round\" fill=\"currentColor\">' + (GLYPHS[key] || GLYPHS.agent) +
+    'stroke-linejoin=\"round\" fill=\"currentColor\">' + (GLYPHS[key] || GLYPHS.turn) +
     '</svg>';
   return holder;
 }
@@ -327,10 +403,9 @@ function rowFor(state) {
   const text = el('span', 'sum');
   text.append(el('span', 'hash', short(state.hash) + ' '), document.createTextNode(summary(state)));
   row.append(twisty, icon(state), text);
-  const commands = state.commands || [];
-  const rc = commands.length ? commands[commands.length - 1].returncode : null;
-  if (rc !== null && rc !== 0) row.append(el('span', 'chip bad', 'rc ' + rc));
   if (state.outcome) row.append(el('span', 'chip', state.outcome.status));
+  if (state.question && !childrenOf(state.hash).some(c => c.kind === 'reply'))
+    row.append(el('span', 'chip wait', 'waiting'));
   const count = el('span', 'count');
   row.append(count);
   row.onclick = () => select(state.hash);
@@ -582,50 +657,74 @@ function renderChanges(parent, state) {
   for (const fold of folded) {
     const parts = [];
     if (fold.added) parts.push('+' + fold.added);
-    if (fold.removed) parts.push('\u2212' + fold.removed);
+    if (fold.removed) parts.push('−' + fold.removed);
     if (fold.modified) parts.push('~' + fold.modified);
     const row = el('div', 'file folded');
-    row.append(el('span', 'tag', '\u2261'), el('span', 'path', fold.prefix + '/'),
+    row.append(el('span', 'tag', '≡'), el('span', 'path', fold.prefix + '/'),
       el('span', 'stat', fold.total + ' paths  ' + parts.join(' ')));
     box.append(row);
   }
 }
 
-/** A tool observation is mini's JSON envelope; show its fields, not its escaping. */
-function renderObservation(text) {
-  let parsed = null;
-  try { parsed = JSON.parse(text); } catch (e) { parsed = null; }
-  if (!parsed || typeof parsed !== 'object') return foldable(el('pre', null, text));
-  const box = el('div');
-  const rc = parsed.returncode;
-  if (rc !== undefined) box.append(el('div', 'muted', 'returncode ' + rc));
-  const body = parsed.output !== undefined ? parsed.output :
-    [parsed.output_head, '\\u22ef ' + parsed.elided_chars + ' characters elided \\u22ef',
-     parsed.output_tail].join('\\n');
-  box.append(el('pre', null, body));
-  if (parsed.exception_info) box.append(el('pre', 'removed', parsed.exception_info));
-  return foldable(box, (body.split('\\n').length) + ' lines');
+/** A tool call, as the agent made it: its name and its arguments. */
+function renderCall(call) {
+  const cmd = el('div', 'cmd');
+  cmd.append(el('span', 'rc', call.id));
+  cmd.append(el('span', 'name', call.name));
+  cmd.append(el('pre', null, call.summary));
+  return cmd;
 }
 
-function renderMessages(parent, state) {
-  const box = section(parent, 'Turn (' + state.messages.length + ' message(s))');
-  if (!state.messages.length) { box.append(el('div', 'muted', 'none')); return; }
-  for (const message of state.messages) {
-    const card = el('div', 'msg');
-    card.append(el('div', 'head', message.role));
-    const body = el('div', 'body');
-    if (message.role === 'tool') body.append(renderObservation(message.content));
-    else {
-      if (message.content) body.append(foldable(el('pre', null, message.content)));
-      for (const call of message.calls || []) {
-        const cmd = el('div', 'cmd');
-        cmd.append(el('pre', null, call.command));
-        body.append(cmd);
-      }
+/** An observation's content by its shape: a text as is, an object field by field, anything
+else as JSON. What the fields mean is the agent's business. */
+function renderContent(content) {
+  if (typeof content === 'string') return foldable(el('pre', null, content), content.split('\\n').length + ' lines');
+  if (content && typeof content === 'object' && !Array.isArray(content)) {
+    const box = el('div');
+    for (const [key, value] of Object.entries(content)) {
+      const field = el('div', 'field');
+      field.append(el('div', 'key', key));
+      if (typeof value === 'string') field.append(foldable(el('pre', null, value), value.split('\\n').length + ' lines'));
+      else field.append(el('pre', 'mono', JSON.stringify(value)));
+      box.append(field);
     }
-    card.append(body);
-    box.append(card);
+    return box;
   }
+  return el('pre', 'mono', JSON.stringify(content, null, 2));
+}
+
+/** One recorded event: a message placed verbatim, a model response, or a tool's observation. */
+function renderEvent(event) {
+  const card = el('div', 'msg');
+  const head = el('div', 'head');
+  const body = el('div', 'body');
+  if (event.type === 'message') {
+    head.append(document.createTextNode(event.role));
+    if (event.callId) head.append(el('span', 'id', 'tool_call_id ' + event.callId));
+    if (event.reasoning) { body.append(el('div', 'muted', 'reasoning')); body.append(foldable(el('pre', 'muted', event.reasoning))); }
+    if (event.role === 'tool') body.append(renderContent(event.content));
+    else if (event.content) body.append(foldable(el('pre', null, event.content)));
+    for (const call of event.calls || []) body.append(renderCall(call));
+  } else if (event.type === 'response') {
+    head.append(document.createTextNode('response'));
+    if (event.finishReason) head.append(el('span', 'id', 'finish_reason ' + event.finishReason));
+    if (event.reasoning) { body.append(el('div', 'muted', 'reasoning')); body.append(foldable(el('pre', 'muted', event.reasoning))); }
+    if (event.content) body.append(foldable(el('pre', null, event.content)));
+    for (const call of event.calls || []) body.append(renderCall(call));
+  } else {
+    head.append(document.createTextNode('observation'));
+    head.append(el('span', 'id', 'tool_call_id ' + event.callId));
+    body.append(renderContent(event.content));
+  }
+  card.append(head, body);
+  return card;
+}
+
+function renderEvents(parent, state) {
+  const events = state.events || [];
+  const box = section(parent, 'Events (' + events.length + ')');
+  if (!events.length) { box.append(el('div', 'muted', 'none')); return; }
+  for (const event of events) box.append(renderEvent(event));
 }
 
 function renderEvaluation(parent, state) {
@@ -641,6 +740,111 @@ function renderEvaluation(parent, state) {
     meta.append(row);
   }
   box.append(meta, foldable(el('pre', null, e.output), e.output.split('\\n').length + ' lines'));
+}
+
+/* --- the model's context -----------------------------------------------
+   The request a continuation from a state is sampled from: the agent's view of the log at that
+   state, in the wire form the provider receives, inside the envelope every sample sends. A state
+   carries what its turn added to the parent's context, or the whole context when the view
+   rewrote earlier messages; the page walks up to the nearest whole context and appends the
+   additions below it. The messages the selected state itself contributed are marked: everything
+   above them is what that state's own turn was sampled from. */
+
+function contextOf(hash) {
+  const chain = [];
+  for (let at = byHash.get(hash); at; at = at.parent ? byHash.get(at.parent) : null) {
+    chain.push(at);
+    if (at.wireFull) break;
+  }
+  chain.reverse();
+  const messages = [];
+  for (const state of chain) for (const message of state.wire || []) messages.push(message);
+  const own = Math.max(0, messages.length - (byHash.get(hash).wireOwn || 0));
+  return { messages, own };
+}
+
+function requestFor(hash) {
+  const request = JSON.parse(JSON.stringify(data.request || {}));
+  request.messages = contextOf(hash).messages;
+  return request;
+}
+
+/** One message exactly as sent: role, content verbatim, tool calls as name and argument string. */
+function renderWireMessage(message, mine) {
+  const card = el('div', 'msg' + (mine ? ' mine' : ''));
+  const head = el('div', 'head', message.role);
+  if (message.tool_call_id) head.append(el('span', 'id', 'tool_call_id ' + message.tool_call_id));
+  card.append(head);
+  const body = el('div', 'body');
+  if (message.reasoning_content) {
+    body.append(el('div', 'muted', 'reasoning_content'));
+    body.append(el('pre', 'muted', message.reasoning_content));
+  }
+  if (message.content !== undefined && message.content !== null)
+    body.append(el('pre', null, message.content));
+  for (const call of message.tool_calls || []) {
+    const cmd = el('div', 'cmd');
+    cmd.append(el('span', 'rc', call.id));
+    cmd.append(el('pre', null, (call.function || {}).name + ' ' + (call.function || {}).arguments));
+    body.append(cmd);
+  }
+  card.append(body);
+  return card;
+}
+
+let modalMode = 'readable';
+
+function showContext(hash) {
+  const modal = document.getElementById('modal');
+  const body = document.getElementById('modal-body');
+  const { messages, own } = contextOf(hash);
+  const request = requestFor(hash);
+  const json = JSON.stringify(request);
+  document.getElementById('modal-title').textContent = 'Context at ' + short(hash) + ' \\u2014 ' +
+    messages.length + ' message(s), ' + json.length + ' bytes of JSON';
+  document.getElementById('modal-mode').textContent = modalMode === 'json' ? 'readable' : 'JSON';
+  body.textContent = '';
+  body.append(el('p', 'note', 'The request a continuation from this state is sampled from: the ' +
+    'agent\\'s view of the log, as the provider receives it. The model name and temperature are ' +
+    'added at request time and are not part of a state.'));
+  if (modalMode === 'json') {
+    body.append(el('pre', 'mono', JSON.stringify(request, null, 2)));
+  } else {
+    if (!messages.length) body.append(el('div', 'muted', 'empty'));
+    if (own === messages.length && messages.length)
+      body.append(el('div', 'muted', 'This state added nothing to the context; it is its parent\\'s.'));
+    messages.forEach((message, index) => {
+      if (index === own && own > 0)
+        body.append(el('div', 'divider', 'added by this state \\u2193 \\u2014 everything above ' +
+          'is what its turn was sampled from'));
+      body.append(renderWireMessage(message, index >= own));
+    });
+  }
+  modal.dataset.hash = hash;
+  modal.classList.remove('hide');
+  body.scrollTop = 0;
+}
+
+function hideContext() {
+  document.getElementById('modal').classList.add('hide');
+}
+
+function wireModal() {
+  const modal = document.getElementById('modal');
+  modal.onclick = event => { if (event.target === modal) hideContext(); };
+  document.getElementById('modal-close').onclick = hideContext;
+  document.getElementById('modal-mode').onclick = () => {
+    modalMode = modalMode === 'json' ? 'readable' : 'json';
+    showContext(modal.dataset.hash);
+  };
+  const copy = document.getElementById('modal-copy');
+  copy.onclick = () => {
+    const text = JSON.stringify(requestFor(modal.dataset.hash), null, 2);
+    const done = ok => { copy.textContent = ok ? 'copied' : 'copy failed';
+      setTimeout(() => { copy.textContent = 'copy JSON'; }, 1200); };
+    try { navigator.clipboard.writeText(text).then(() => done(true), () => done(false)); }
+    catch (e) { done(false); }
+  };
 }
 
 /** The hashes currently on screen, top to bottom, for keyboard movement. */
@@ -667,13 +871,24 @@ function select(hash) {
   if (nodes.has(hash)) nodes.get(hash).row.classList.add('on');
   const detail = document.getElementById('detail');
   detail.textContent = '';
-  detail.append(el('h1', null, state.kind + '  ' + short(hash)));
+  const headbar = el('div', 'headbar');
+  headbar.append(el('h1', null, state.kind + '  ' + short(hash)));
+  // An evaluation is a leaf nothing continues from, so it has no context to show.
+  if (state.kind !== 'evaluation') {
+    const context = el('button', 'tool', 'view context');
+    context.title = 'The request a continuation from this state is sampled from';
+    context.onclick = () => showContext(hash);
+    headbar.append(context);
+  }
+  detail.append(headbar);
   const meta = el('table', 'meta');
   const rows = [['hash', hash], ['parent', state.parent || '(root)'], ['workspace', state.env]];
   if (state.note) rows.push(['note', state.note]);
   if (state.image) rows.push(['image', state.image]);
   if (state.base) rows.push(['base commit', state.base]);
   if (state.outcome) rows.push(['outcome', state.outcome.status]);
+  if (state.question) rows.push(['question', state.question.text]);
+  if (state.intervention) rows.push(['message', state.intervention.message]);
   for (const [k, v] of rows) {
     const row = el('tr');
     row.append(el('td', null, k), el('td', 'mono', v));
@@ -683,12 +898,16 @@ function select(hash) {
   if (state.outcome && state.outcome.submission)
     detail.append(foldable(el('pre', null, state.outcome.submission)));
   renderEvaluation(detail, state);
-  renderMessages(detail, state);
+  renderEvents(detail, state);
   renderChanges(detail, state);
   detail.scrollTop = 0;
 }
 
 document.onkeydown = event => {
+  if (!document.getElementById('modal').classList.contains('hide')) {
+    if (event.key === 'Escape') hideContext();
+    return;
+  }
   if (event.target.tagName === 'INPUT' || !selected) return;
   if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;
   event.preventDefault();
@@ -700,18 +919,33 @@ document.onkeydown = event => {
 
 buildTree();
 wireTools();
+wireModal();
 const wanted = data.states.find(s => short(s.hash) === location.hash.slice(1));
 select((wanted || childrenOf('')[0] || data.states[0]).hash);"
+
+/-- The request every sample of an agent sends, minus its messages: the tools, the tool choice,
+and the response format, exactly as `Chat.Request.toJson` lays them out. The page fills in
+`messages` per state. The model name and temperature are added by the provider at request time
+and are not recorded in a state, so they are not here either. -/
+def requestEnvelope (tools : Array Chat.ToolDefinition) : Lean.Json :=
+  ({ messages := #[], tools } : Chat.Request).toJson
+
+/-- Everything the page renders, as one JSON document: the states (see `stateJson`) and the
+request envelope. `view` and `tools` are the agent's; nothing else about it is needed. -/
+def dataJson (store : Store) (view : View) (tools : Array Chat.ToolDefinition)
+    (hidden : Array String := #[]) : Result Lean.Json := do
+  let hidden := hidden.map fun prefix' =>
+    if prefix'.endsWith "/" then (prefix'.dropEnd 1).toString else prefix'
+  let hashes ← allStates store
+  let states ← hashes.mapM (stateJson store view hidden)
+  pure <| .mkObj [("states", .arr states), ("request", requestEnvelope tools)]
 
 /-- Renders every state in the store as one standalone page. Paths under `hidden` are counted
 rather than listed, so a directory that changes constantly and means nothing — a virtual
 environment, a bytecode cache — is reported without burying the rest. -/
-def report (store : Store) (title : String) (hidden : Array String := #[]) : Result String := do
-  let hidden := hidden.map fun prefix' =>
-    if prefix'.endsWith "/" then (prefix'.dropEnd 1).toString else prefix'
-  let hashes ← Session.allStates store
-  let states ← hashes.mapM (stateJson store hidden)
-  let json := (Lean.Json.mkObj [("states", .arr states)]).compress
+def report (store : Store) (title : String) (view : View) (tools : Array Chat.ToolDefinition)
+    (hidden : Array String := #[]) : Result String := do
+  let json := (← dataJson store view tools hidden).compress
   -- `</` cannot appear inside a script element; the JSON parser does not mind the escape.
   let safe := json.replace "</" "<\\/"
   pure <|
@@ -724,7 +958,13 @@ def report (store : Store) (title : String) (hidden : Array String := #[]) : Res
     "<button class=\"tool\" id=\"expand\">expand</button>" ++
     "<button class=\"tool\" id=\"collapse\">collapse</button></div>" ++
     "<div id=\"tree\"></div></div><div id=\"detail\"></div></div>\n" ++
+    "<div id=\"modal\" class=\"hide\"><div class=\"win\"><div class=\"bar\">" ++
+    "<span class=\"ttl\" id=\"modal-title\"></span>" ++
+    "<button class=\"tool\" id=\"modal-mode\">JSON</button>" ++
+    "<button class=\"tool\" id=\"modal-copy\">copy JSON</button>" ++
+    "<button class=\"tool\" id=\"modal-close\">close</button></div>" ++
+    "<div id=\"modal-body\"></div></div></div>\n" ++
     "<script id=\"data\" type=\"application/json\">" ++ safe ++ "</script>\n" ++
     "<script>\n" ++ script ++ "\n</script>\n</body></html>\n"
 
-end Alaya.Agent.MiniSwe.Html
+end Alaya.Trajectory.Html

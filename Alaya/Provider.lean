@@ -19,6 +19,9 @@ def names : Array String := #["yunwu", "closeai", "xmcp", "dgx"]
 structure Options where
   /-- Endpoint for `dgx`; `none` keeps the built-in address and honours `DGX_BASE_URL`. -/
   dgxEndpoint? : Option Dgx.Endpoint := none
+  /-- `--echo-reasoning`: send an empty `reasoning_content` on assistant turns that have none,
+  which DeepSeek's thinking mode demands of a tool-calling history. -/
+  echoReasoning : Bool := false
   deriving Repr, Inhabited
 
 /-- Reads `--url` and `--port`, which address the DGX Spark. `--port` alone changes the port of
@@ -32,7 +35,7 @@ def Options.ofArgs (args : Cli.Args) : Result Options := do
   let dgxEndpoint? ← match ← args.nat? "port" with
     | none => pure fromUrl
     | some port => pure (some { fromUrl.getD {} with port })
-  pure { dgxEndpoint? }
+  pure { dgxEndpoint?, echoReasoning := args.isSet "echo-reasoning" }
 
 /-- Splits a `PROVIDER:NAME` spec. The model name may itself contain colons. -/
 def splitSpec (spec : String) : String × String :=
@@ -46,10 +49,10 @@ def fromSpec (spec : String) (temperature : Float) (options : Options := {}) : R
   if name.isEmpty then
     throw <| .configuration s!"'{spec}' is not a PROVIDER:NAME spec (e.g. dgx:gpt-oss-120b)"
   else match provider with
-    | "yunwu" => Yunwu.model name temperature
-    | "closeai" => CloseAI.model name temperature
-    | "xmcp" => XMCP.model name temperature
-    | "dgx" => Dgx.model name temperature options.dgxEndpoint?
+    | "yunwu" => Yunwu.model name temperature (echoReasoning := options.echoReasoning)
+    | "closeai" => CloseAI.model name temperature (echoReasoning := options.echoReasoning)
+    | "xmcp" => XMCP.model name temperature (echoReasoning := options.echoReasoning)
+    | "dgx" => Dgx.model name temperature options.dgxEndpoint? (echoReasoning := options.echoReasoning)
     | other =>
       throw <| .configuration s!"unknown provider: {other} (use {"|".intercalate names.toList})"
 

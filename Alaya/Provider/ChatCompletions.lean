@@ -15,6 +15,16 @@ structure Config where
   requestTimeoutMs : Nat := 600000
   /-- Abort connection establishment after this many milliseconds. -/
   connectTimeoutMs : Nat := 30000
+  /-- Send `reasoning_content: ""` on every assistant message that has none. DeepSeek's thinking
+  mode rejects a tool-calling history whose assistant turns lack the field — including turns
+  another model wrote — and accepts the empty string; other providers reject the unknown field,
+  so this is opt-in. -/
+  echoReasoning : Bool := false
+  /-- With `echoReasoning`, how many of the most recent assistant turns keep their recorded
+  `reasoning_content` on the wire; older turns send the empty string. A thinking trace runs to
+  tens of kilobytes per turn, and echoing every one made a twenty-turn context exceed half a
+  megabyte and time out. The dialogue itself keeps every trace; this only shapes the request. -/
+  reasoningWindow : Nat := 2
 
 private def validateResponses (config : Config) (request : Chat.Request)
     (responses : Array Chat.Response) : Result (Array Chat.Response) :=
@@ -83,11 +93,34 @@ private def retryAfterMs? (headers : String) : Option Nat :=
       else none
   (value? "retry-after-ms").orElse fun _ => (value? "retry-after").map (· * 1000)
 
+/-- Gives every assistant message of a payload a `reasoning_content`: its recorded trace on the
+last `window` assistant turns, the empty string on every other. -/
+private def echoReasoning (window : Nat) (payload : Lean.Json) : Lean.Json :=
+  match payload.getObjVal? "messages" with
+  | .ok (.arr messages) =>
+    let isAssistant (message : Lean.Json) : Bool :=
+      (message.getObjVal? "role" >>= Lean.Json.getStr?).toOption == some "assistant"
+    let assistants := messages.filter isAssistant |>.size
+    let (_, rewritten) := messages.foldl (init := (0, #[])) fun (seen, acc) message =>
+      if !isAssistant message then (seen, acc.push message)
+      else
+        let recent := seen + window >= assistants
+        let message :=
+          if recent then
+            match message.getObjVal? "reasoning_content" with
+            | .ok _ => message
+            | .error _ => message.setObjVal! "reasoning_content" ""
+          else message.setObjVal! "reasoning_content" ""
+        (seen + 1, acc.push message)
+    payload.setObjVal! "messages" (.arr rewritten)
+  | _ => payload
+
 private def complete (config : Config) (temperature : Lean.Json) (request : Chat.Request)
     (n : Nat) : Result (Array Chat.Response) := do
   let payload := request.toJson config.structuredOutput
     |>.setObjVal! "model" config.name
     |>.setObjVal! "temperature" temperature
+  let payload := if config.echoReasoning then echoReasoning config.reasoningWindow payload else payload
   -- Omit `n` for single completions so providers without multi-sample support stay compatible.
   let payload := if n == 1 then payload else payload.setObjVal! "n" n
   let result ← Result.fromIO Error.transport <| requestIO config payload.compress
@@ -110,10 +143,15 @@ def model (config : Config) : Result Model := do
     | .inr number => pure <| Lean.Json.num number
     | .inl _ => throw <| .configuration "temperature must be finite"
   pure {
-    identity := Lean.Json.mkObj [
-      ("model", config.canonicalModelName?.getD config.name),
-      ("temperature", temperature)
-    ]
+    identity :=
+      let fields : List (String × Lean.Json) := [
+        ("model", .str (config.canonicalModelName?.getD config.name)),
+        ("temperature", temperature)]
+      -- Echoing, and how much of it, changes what the model is sent, so both are part of the
+      -- identity cached against.
+      Lean.Json.mkObj <| if config.echoReasoning
+        then fields ++ [("echo_reasoning", .bool true), ("reasoning_window", (config.reasoningWindow : Lean.Json))]
+        else fields
     structuredOutput := config.structuredOutput
     sample := fun request => pure {
       next := do
@@ -134,7 +172,8 @@ def modelFromEnv (provider keyVar baseUrl name : String) (temperature : Float)
     (defaultKey? : Option String := none)
     (baseUrlVar? : Option String := none)
     (canonicalModelName? : Option String := none)
-    (structuredOutput := Chat.StructuredOutput.native) : Result Model := do
+    (structuredOutput := Chat.StructuredOutput.native)
+    (echoReasoning := false) : Result Model := do
   let env (envVar : String) : Result (Option String) :=
     Result.fromIO Error.configuration do pure ((← IO.getEnv envVar).filter (!·.isEmpty))
   let apiKey ← match (← env keyVar), defaultKey? with
@@ -144,6 +183,7 @@ def modelFromEnv (provider keyVar baseUrl name : String) (temperature : Float)
   let baseUrl ← match baseUrlVar? with
     | some envVar => pure ((← env envVar).getD baseUrl)
     | none => pure baseUrl
-  model { provider, baseUrl, apiKey, name, canonicalModelName?, temperature, structuredOutput }
+  model { provider, baseUrl, apiKey, name, canonicalModelName?, temperature, structuredOutput
+          echoReasoning }
 
 end Alaya.Provider.ChatCompletions

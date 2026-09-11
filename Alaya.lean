@@ -8,8 +8,9 @@ import Alaya.Cas
 import Alaya.Cli
 import Alaya.Provider
 import Alaya.Chat.Schema
+import Alaya.Executor
+import Alaya.Executor.Docker
 import Alaya.Agent
 import Alaya.Agent.MiniSwe
-import Alaya.Agent.MiniSwe.Session
-import Alaya.Agent.MiniSwe.Docker
-import Alaya.Agent.MiniSwe.Html
+import Alaya.Trajectory
+import Alaya.Trajectory.Html

@@ -1,27 +1,27 @@
-import Alaya.Agent.MiniSwe
+import Alaya.Executor
 import Alaya.Cli
 
 /-!
-An `Executor` that runs the agent's commands in a container.
+An `Executor` that runs commands in a container.
 
-The workspace stays where it was: the runtime's working directory is bind-mounted at
-`/workspace`, so the content-addressed store still snapshots a host directory and the trajectory
-tree is unaffected by the choice of executor. One container is started per run and every command
-goes through `docker exec`, which reproduces mini's persistence *within* a run — an install in
-one command is visible to the next.
+The workspace stays where it was: the working directory is bind-mounted at `/workspace`, so the
+content-addressed store still snapshots a host directory and the trajectory tree is unaffected
+by the choice of executor. One container is started per run and every command goes through
+`docker exec`, which reproduces a persistent environment *within* a run — an install in one
+command is visible to the next.
 
 The deviation that buys: mutations outside `/workspace` are not part of any snapshot, so a
 branch resumed in a later run starts from the image again. Anything that must survive branching
 has to land in the workspace or in the image.
 
 The command itself sees exactly what it sees locally: the same `exec /bin/sh -c "$@" 2>&1`
-trampoline, the same argv, the same merged stderr, and mini's environment overrides applied to
-the command rather than to the client.
+trampoline, the same argv, the same merged stderr, and the environment overrides applied to the
+command rather than to the client.
 -/
 
-namespace Alaya.Agent.MiniSwe.Docker
+namespace Alaya.Executor.Docker
 
-open Alaya (Result Error)
+open Alaya (Result Error Output Uname Executor)
 
 /-- Where the working directory is mounted inside the container. -/
 def workMount : String := "/workspace"
@@ -111,8 +111,8 @@ private def runArgs (settings : Settings) : Array String :=
     -- The uid usually has no passwd entry, and tools that want $HOME would write to /.
     ++ #["--env", "HOME=/tmp"]
 
-/-- `uname` inside the image, for the instance prompt. Read with a throwaway container, since it
-is needed at `root` time, before any run has started. -/
+/-- `uname` inside the image, for a prompt that describes the machine. Read with a throwaway
+container, since it is needed at `root` time, before any run has started. -/
 def uname (settings : Settings) : Result Uname := do
   let script := "uname -s; uname -r; uname -v; uname -m"
   let out ← docker (#["run", "--rm", "--entrypoint", "/bin/sh"] ++ runArgs settings ++
@@ -133,9 +133,9 @@ private structure Container where
 /-- Starts the run's container with the working directory bind-mounted.
 
 The mount is bound to that directory's inode, and a full (non-incremental) materialize replaces
-it — `Store.materialize` removes the destination and recreates it. Both `resume` and `stepOnce`
-check out once, before the first command, so the container is always started against the final
-inode. Anything that re-materializes mid-run has to restart the container too. -/
+it — `Store.materialize` removes the destination and recreates it. A trajectory checks out
+once, before the first command, so the container is always started against the final inode.
+Anything that re-materializes mid-run has to restart the container too. -/
 private def start (settings : Settings) (workDir : System.FilePath) : IO Container := do
   let host ← IO.FS.realPath workDir
   let args := #["run", "--detach", "--rm", "--init", "--entrypoint", "/bin/sh"]
@@ -168,18 +168,8 @@ def copyOut (settings : Settings) (path : String) (destination : System.FilePath
 
 /-! ## Running one command -/
 
-/-- Mini's timeout observation, byte-identical to the local executor's. -/
-private def timedOut (output display : String) (timeoutSeconds : Nat) : Output := {
-  output, returncode := -1
-  exceptionInfo := "An error occurred while executing the command: Command '" ++ display ++
-    "' timed out after " ++ toString timeoutSeconds ++ " seconds" }
-
-private def failed (message : String) : Output :=
-  { output := "", returncode := -1,
-    exceptionInfo := s!"An error occurred while executing the command: {message}" }
-
 /-- The trampoline, with the in-container timeout when the image has one. The inner
-`/bin/sh -c "$@"` still receives exactly mini's argv, so its error messages are unchanged. -/
+`/bin/sh -c "$@"` still receives exactly the caller's argv, so its error messages are unchanged. -/
 private def script (config : Config) (hasTimeout : Bool) : String :=
   if hasTimeout && config.timeoutSeconds > 0 then
     s!"exec timeout -k 2 {config.timeoutSeconds} /bin/sh -c \"$@\" 2>&1"
@@ -208,8 +198,7 @@ private def envArgs (config : Config) : Array String :=
   config.env.foldl (fun args (key, value) => args ++ #["--env", s!"{key}={value}"]) #[]
 
 /-- Runs one command in the run's container, starting it on first use and after a timeout had to
-take it down. Every failure is an observation, as mini never lets an execution problem end a
-run. -/
+take it down. Every failure is an observation, as an execution problem must never end a run. -/
 private def execIn (ref : IO.Ref (Option Container)) (settings : Settings) (config : Config)
     (workDir : System.FilePath) (argv : Array String) (display : String) : IO Output := do
   try
@@ -291,4 +280,4 @@ def settings? (args : Cli.Args) : Result (Option Settings) := do
   | some "" => throw <| .configuration "--image needs a value (e.g. --image python:3.12-slim)"
   | some image => some <$> settingsFor args image
 
-end Alaya.Agent.MiniSwe.Docker
+end Alaya.Executor.Docker

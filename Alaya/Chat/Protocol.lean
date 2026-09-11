@@ -16,7 +16,11 @@ structure ToolCall where
 inductive Message where
   | system (content : String)
   | user (content : String)
+  /-- `reasoning?` is the provider's `reasoning_content` (DeepSeek's thinking-mode trace).
+  It is part of the model's memory: DeepSeek requires it echoed back on every assistant turn
+  of a tool-calling exchange, so it is carried in the dialogue and sent when present. -/
   | assistant (content? : Option String := none) (toolCalls : Array ToolCall := #[])
+      (reasoning? : Option String := none)
   | tool (callId : String) (content : Lean.Json)
   deriving Inhabited
 
@@ -36,9 +40,11 @@ private def toolCallToJson (call : ToolCall) : Lean.Json :=
 def toJson : Message -> Lean.Json
   | .system content => .mkObj [("role", "system"), ("content", content)]
   | .user content => .mkObj [("role", "user"), ("content", content)]
-  | .assistant content? toolCalls =>
+  | .assistant content? toolCalls reasoning? =>
     let json := Lean.Json.mkObj [("role", "assistant")]
     let json := match content? with | some content => json.setObjVal! "content" content | none => json
+    let json := match reasoning? with
+      | some reasoning => json.setObjVal! "reasoning_content" reasoning | none => json
     if toolCalls.isEmpty then json else json.setObjVal! "tool_calls" (.arr <| toolCalls.map toolCallToJson)
   | .tool callId content =>
     -- A string tool result is sent as-is; structured results are compacted to a JSON string.
@@ -166,6 +172,8 @@ structure Response where
   /-- The provider's `finish_reason` for this choice (e.g. "stop", "tool_calls", "length"),
   when reported. Some control flows distinguish a truncated response from a formatting error. -/
   finishReason? : Option String := none
+  /-- The provider's `reasoning_content`, when it reports one (see `Message.assistant`). -/
+  reasoning? : Option String := none
   raw : Lean.Json
   structuredOutput : StructuredOutput := .native
   deriving Inhabited
@@ -229,7 +237,8 @@ def fromJsons (raw : Lean.Json) : Result (Array Response) :=
         | .ok calls => calls.getArr?.bind fun calls => calls.mapM parseToolCall
         | .error _ => pure #[]
       let finishReason? := (choice.getObjVal? "finish_reason" >>= Lean.Json.getStr?).toOption
-      pure { content?, toolCalls, usage?, finishReason?, raw }
+      let reasoning? := (message.getObjVal? "reasoning_content" >>= Lean.Json.getStr?).toOption
+      pure { content?, toolCalls, usage?, finishReason?, reasoning?, raw }
 
 def fromJson (raw : Lean.Json) : Result Response := do
   let responses ← fromJsons raw

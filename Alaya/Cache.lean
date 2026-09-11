@@ -24,7 +24,8 @@ private def responseToJson (response : Chat.Response) : Lean.Json :=
       ("invalid_arguments", call.invalidArguments?.map Lean.Json.str |>.getD .null)
     ]),
     ("usage", response.usage?.map usageToJson |>.getD .null),
-    ("finish_reason", response.finishReason?.map Lean.Json.str |>.getD .null)
+    ("finish_reason", response.finishReason?.map Lean.Json.str |>.getD .null),
+    ("reasoning_content", response.reasoning?.map Lean.Json.str |>.getD .null)
   ]
 
 private def responsesToJson (key : String) (responses : Array Chat.Response) : Lean.Json :=
@@ -57,7 +58,9 @@ private def responseFromJson (json : Lean.Json) : Except String Chat.Response :=
     pure { id, name, arguments, invalidArguments? }
   let usage? := usageFromJson? json
   let finishReason? := (json.getObjVal? "finish_reason" >>= Lean.Json.getStr?).toOption
-  pure { content?, toolCalls, usage?, finishReason?, raw := .null }
+  -- Absent in entries written before it was recorded, which is exactly `none`.
+  let reasoning? := (json.getObjVal? "reasoning_content" >>= Lean.Json.getStr?).toOption
+  pure { content?, toolCalls, usage?, finishReason?, reasoning?, raw := .null }
 
 private def responsesFromJson (key : String) (json : Lean.Json) : Except String (Array Chat.Response) := do
   let version ← liftJson "cached entry has no version" <| json.getObjVal? "version" >>= Lean.Json.getNat?

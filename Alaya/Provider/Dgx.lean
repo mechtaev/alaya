@@ -50,11 +50,12 @@ usually need no credential, so `DGX_API_KEY` defaults to `EMPTY` (the vLLM conve
 def model (name : String) (temperature : Float)
     (endpoint? : Option Endpoint := none)
     (canonicalModelName? : Option String := none)
-    (structuredOutput := Chat.StructuredOutput.native) : Result Model :=
+    (structuredOutput := Chat.StructuredOutput.native) (echoReasoning := false) : Result Model :=
   ChatCompletions.modelFromEnv "DGX" "DGX_API_KEY"
     ((endpoint?.getD {}).baseUrl) name temperature
     (defaultKey? := some "EMPTY")
     (baseUrlVar? := if endpoint?.isSome then none else some "DGX_BASE_URL")
     (canonicalModelName? := canonicalModelName?) (structuredOutput := structuredOutput)
+    (echoReasoning := echoReasoning)
 
 end Alaya.Provider.Dgx

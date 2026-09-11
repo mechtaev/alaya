@@ -8,12 +8,16 @@ namespace DockerTests
 
 open Testing
 open Alaya
-open Alaya.Agent.MiniSwe
+open Alaya.Executor
+open Alaya.Trajectory
 
 /-- The image the tests run in. Small, and `busybox` gives it a `timeout(1)`. -/
 private def imageReference : String := "alpine:3"
 
-private def config : Config := { task := "t", timeoutSeconds := 5 }
+/-- Mini's command settings, with a short timeout. -/
+private def miniConfig : Agent.MiniSwe.Config := { task := "t", timeoutSeconds := 5 }
+
+private def config : Executor.Config := miniConfig.executor
 
 /-- Pinned settings for the test image, or `none` when this machine cannot run the suite. -/
 private def settings? : TestM (Option Docker.Settings) := do
@@ -56,6 +60,12 @@ private def workspace : TestM System.FilePath := do
   assertOk <| Result.fromIO Error.storage (IO.FS.createDirAll work)
   pure work
 
+/-- A runtime driving the mini agent in the container. -/
+private def runtime (settings : Docker.Settings) (work : System.FilePath) (store : Cas.Store)
+    (model : Model) : TestM Runtime := do
+  let executor ← assertOk (Docker.executor settings config)
+  pure { store, workDir := work, executor, model, agent := Agent.MiniSwe.agent executor work miniConfig }
+
 def suite : Suite := Testing.suite "docker" #[
   test "pins the image to exact bits and reads uname from it, not the host" <| withDocker
     fun settings => do
@@ -84,7 +94,7 @@ def suite : Suite := Testing.suite "docker" #[
       finally
         executor.close,
 
-  test "merges stderr into stdout at the fd level, as the local executor does" <| withDocker
+  test "merges stderr into stdout at the fd level, as the host executor does" <| withDocker
     fun settings => do
       let work ← workspace
       let executor ← assertOk (Docker.executor settings config)
@@ -142,21 +152,20 @@ def suite : Suite := Testing.suite "docker" #[
       assertOk <| Result.fromIO Error.storage (IO.FS.createDirAll project)
       let store ← assertOk <| Cas.Store.create ((← scratch) / "store")
       let model ← scripted #[toolResponse "echo made-in-container > made.txt"]
-      let executor ← assertOk (Docker.executor settings config)
-      let rt : Runtime := { model, store, workDir := work, executor, config }
+      let rt ← runtime settings work store model
       try
         let uname ← assertOk (Docker.uname settings)
-        let root ← assertOk <|
-          Session.createRoot store config project uname (some settings.image)
-        let child ← assertOk <| Session.stepOnce rt "test:model" root
-        let state ← assertOk (Session.getState store child)
+        let root ← assertOk <| createRoot store (Agent.MiniSwe.initialLog miniConfig uname) project
+          (some "t") (some settings.image)
+        let child ← assertOk <| stepOnce rt "test:model" root
+        let state ← assertOk (getState store child)
         assertEqual "image inherited" state.image? (some settings.image)
         -- The container wrote it, the host snapshotted it, the store has it.
         assertEqual "snapshot"
           ((← assertOk (store.readPath state.env "made.txt")).map (String.fromUTF8? ·))
           (some (some "made-in-container\n"))
       finally
-        executor.close,
+        rt.executor.close,
 
   test "seeds a workspace from a path inside the image" <| withDocker
     fun settings => do
@@ -192,21 +201,19 @@ def suite : Suite := Testing.suite "docker" #[
         IO.FS.writeFile (tests / "check.sh") "grep -q code /workspace/app.txt\n"
       let store ← assertOk <| Cas.Store.create ((← scratch) / "store")
       let model ← scripted #[]
-      let executor ← assertOk (Docker.executor settings config)
-      let rt : Runtime := { model, store, workDir := work, executor, config }
+      let rt ← runtime settings work store model
       try
         let uname ← assertOk (Docker.uname settings)
-        let root ← assertOk <|
-          Session.createRoot store config project uname (some settings.image)
+        let root ← assertOk <| createRoot store (Agent.MiniSwe.initialLog miniConfig uname) project
+          (some "t") (some settings.image)
         -- `/workspace` only exists inside the container, so this passing proves where it ran.
-        let node ← assertOk <|
-          Session.evaluate rt root "sh check.sh && uname -s" (.directory tests)
-        let state ← assertOk (Session.getState store node)
+        let node ← assertOk <| evaluate rt root "sh check.sh && uname -s" (.directory tests)
+        let state ← assertOk (getState store node)
         assertEqual "passed" (state.evaluation?.map (·.passed)) (some true)
         assertEqual "ran in the container" (state.evaluation?.map (·.output)) (some "Linux\n")
         assertEqual "image inherited" state.image? (some settings.image)
       finally
-        executor.close,
+        rt.executor.close,
 
   test "a missing image is a configuration error naming it" <| withDocker
     fun _ => do
