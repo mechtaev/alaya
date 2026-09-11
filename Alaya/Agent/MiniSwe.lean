@@ -371,16 +371,16 @@ def next (config : Config) (log : Log) : Directive :=
         | none => sampleOrStop
 
 /-- Runs one `bash` call through the executor and records mini's output dict. -/
-def act (executor : Executor) (workDir : System.FilePath) (call : Chat.ToolCall) :
+def act (executor : Executor) (workspace : Agent.Workspace) (call : Chat.ToolCall) :
     Result Lean.Json := do
   if call.name != "bash" then
     throw <| .configuration s!"mini has no tool named {call.name} to run"
   let command := (call.arguments.getObjVal? "command").toOption.getD .null
-  let output ← Result.fromIO Error.storage (execCommand executor workDir command)
+  let output ← Result.fromIO Error.storage (execCommand executor workspace.dir command)
   pure output.toJson
 
-/-- The mini agent over an executor and a working directory. -/
-def agent (executor : Executor) (workDir : System.FilePath) (config : Config) : Agent := {
+/-- The mini agent over an executor; the workspace arrives with each act. -/
+def agent (executor : Executor) (config : Config) : Agent := {
   identity := .mkObj [
     ("agent", "mini-swe"), ("step_limit", (config.stepLimit : Lean.Json)),
     ("max_consecutive_format_errors", (config.maxConsecutiveFormatErrors : Lean.Json)),
@@ -388,7 +388,7 @@ def agent (executor : Executor) (workDir : System.FilePath) (config : Config) : 
   tools
   view
   next := next config
-  act := act executor workDir
+  act := act executor
 }
 
 end Alaya.Agent.MiniSwe

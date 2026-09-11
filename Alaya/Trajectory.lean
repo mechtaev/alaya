@@ -486,7 +486,7 @@ private partial def follow (rt : Runtime) (log : Log) (appended : Log) (env : Ha
     let question : Question := { callId, text }
     pure (appended, env, some question, .question question)
   | .act call =>
-    let content ← rt.agent.act call
+    let content ← rt.agent.act { dir := rt.workDir } call
     let env ← rt.store.snapshot rt.workDir
     let event := Event.observation call.id content
     follow rt (log.push event) (appended.push event) env

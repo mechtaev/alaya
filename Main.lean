@@ -65,9 +65,9 @@ private def executorFor (args : Cli.Args) (image? : Option String) (config : Exe
           "a continuation has to run the same bits its earlier turns did"
     Executor.Docker.executor settings config
 
-/-- The mini agent over an executor and the work directory, with the given command timeout. -/
-private def miniAgent (executor : Executor) (work : WorkDir) (config : Config) : Agent.Agent :=
-  Agent.MiniSwe.agent executor work.path config
+/-- The mini agent over an executor, with the given command timeout. -/
+private def miniAgent (executor : Executor) (config : Config) : Agent.Agent :=
+  Agent.MiniSwe.agent executor config
 
 private def runtimeFor (data : DataDir) (work : WorkDir) (args : Cli.Args)
     (image? : Option String) : Result Runtime := do
@@ -77,7 +77,7 @@ private def runtimeFor (data : DataDir) (work : WorkDir) (args : Cli.Args)
   let config : Config := { task := "" }
   let executor ← executorFor args image? config.executor
   pure { store := data.store, workDir := work.path, executor, model
-         agent := miniAgent executor work config }
+         agent := miniAgent executor config }
 
 /-- The `uname` a new trajectory's prompt is built from, and the image it is pinned to: read
 from the image when there is one, from the host otherwise. -/
@@ -163,7 +163,7 @@ private def evalRuntime (data : DataDir) (work : WorkDir) (args : Cli.Args)
     store := data.store, workDir := work.path, executor
     model := { identity := .mkObj [("model", "none")]
                sample := fun _ => throw (.configuration "evaluation does not call a model") }
-    agent := miniAgent executor work config }
+    agent := miniAgent executor config }
 
 /-- Exit status when a run stopped at a question rather than an outcome, so a supervisor driving
 `alaya` as a subprocess can tell the two apart without parsing anything. -/

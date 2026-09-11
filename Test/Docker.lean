@@ -64,7 +64,7 @@ private def workspace : TestM System.FilePath := do
 private def runtime (settings : Docker.Settings) (work : System.FilePath) (store : Cas.Store)
     (model : Model) : TestM Runtime := do
   let executor ← assertOk (Docker.executor settings config)
-  pure { store, workDir := work, executor, model, agent := Agent.MiniSwe.agent executor work miniConfig }
+  pure { store, workDir := work, executor, model, agent := Agent.MiniSwe.agent executor miniConfig }
 
 def suite : Suite := Testing.suite "docker" #[
   test "pins the image to exact bits and reads uname from it, not the host" <| withDocker

@@ -64,6 +64,12 @@ inductive Directive where
   | done (outcome : Outcome)
   deriving Inhabited
 
+/-- The directory an agent's tools act in. A trajectory fills it from a state's snapshot before
+a turn and snapshots it again after each `act`; the path is never recorded. -/
+structure Workspace where
+  dir : System.FilePath
+  deriving Inhabited
+
 /-- An agent, as the four things a driver needs from it. -/
 structure Agent where
   /-- Names the agent and the configuration that shapes its view and control flow, for
@@ -75,10 +81,8 @@ structure Agent where
   view : View
   /-- What to do next. Pure and total: everything it needs is in the log. -/
   next : Log -> Directive
-  /-- Runs one tool call against the environment and returns the observation to record. The
-  environment is whatever the agent closed over; a driver that wants it durable snapshots it
-  after each act. -/
-  act : Chat.ToolCall -> Result Lean.Json
+  /-- Runs one tool call in the workspace and returns the observation to record. -/
+  act : Workspace -> Chat.ToolCall -> Result Lean.Json
 
 namespace Log
 
@@ -130,16 +134,16 @@ inductive Stop where
 /-- The reference loop: follows the agent's directives until it stops, sampling from `view log`
 and recording every event. A trajectory drives the same steps but persists each turn as a
 state; this loop is the specification they agree on, and what a test runs an agent with. -/
-partial def run (agent : Agent) (sample : Dialogue -> Result Chat.Response) (log : Log) :
-    Result (Log × Stop) := do
+partial def run (agent : Agent) (workspace : Workspace) (sample : Dialogue -> Result Chat.Response)
+    (log : Log) : Result (Log × Stop) := do
   match agent.next log with
   | .done outcome => pure (log, .outcome outcome)
   | .ask callId question => pure (log, .question callId question)
   | .sample =>
     let response ← sample (agent.view log)
-    run agent sample (log.push (.response response))
+    run agent workspace sample (log.push (.response response))
   | .act call =>
-    let content ← agent.act call
-    run agent sample (log.push (.observation call.id content))
+    let content ← agent.act workspace call
+    run agent workspace sample (log.push (.observation call.id content))
 
 end Alaya.Agent

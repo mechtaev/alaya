@@ -7,7 +7,9 @@
 - what the model is sent is a pure function of the log, the agent's **view**;
 - what happens next — sample, run a tool call, ask a person, stop — is a pure function of
   the log, the agent's **next**;
-- a tool call is run by the agent's **act**, which returns the observation to record;
+- the agent acts in a **workspace**, a directory the trajectory fills from a state's snapshot
+  and snapshots again after each act; a tool call is run by the agent's **act**, which returns
+  the observation to record;
 - the **tools** offered to the model are fixed for the agent.
 
 An agent is a value of the record `Agent` holding these; `Alaya.Agent.MiniSwe` (`docs/miniswe.md`)
@@ -131,7 +133,14 @@ inductive Directive where
 the person's answer arrives later as the observation of the asking call, and the log continues
 as if the tool had returned.
 
-`act : Chat.ToolCall -> Result Json` runs one call against the environment and returns the
+```lean
+structure Workspace where
+  dir : System.FilePath   -- the state's files, materialized for this act
+```
+
+A `Workspace` is the directory an agent's tools act in.
+
+`act : Workspace -> Chat.ToolCall -> Result Json` runs one call in the workspace and returns the
 observation to record. The shape of the observation is the agent's to define, and its view is
 what renders it. An agent that fails to execute a call returns an observation saying so rather
 than throwing, so that a run survives a failed command.
@@ -144,10 +153,10 @@ structure Agent where
   tools : Array Chat.ToolDefinition      -- offered on every sample
   view : View
   next : Log -> Directive
-  act : Chat.ToolCall -> Result Lean.Json
+  act : Workspace -> Chat.ToolCall -> Result Lean.Json
 ```
 
-`Agent.run agent sample log` is the reference loop: follow `next` until it stops, sampling from
+`Agent.run agent workspace sample log` is the reference loop: follow `next` until it stops, sampling from
 `view log` and pushing every event. It returns the final log and a `Stop`: an `outcome`, or a
 `question` a person has to answer. A trajectory drives the same steps but persists each **turn**
 — one sample and the acts that follow it — as a state, and snapshots after every act. Tests run
@@ -164,7 +173,7 @@ flowchart TD
   S2 --> S3["log.push (response r)"]
   S3 --> NEXT
 
-  NEXT -->|"act call"| A1["content := agent.act call"]
+  NEXT -->|"act call"| A1["content := agent.act workspace call"]
   A1 --> A2["log.push (observation call.id content)"]
   A2 --> NEXT
 

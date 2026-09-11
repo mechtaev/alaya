@@ -2,19 +2,13 @@
 
 `Alaya.Trajectory` records an agent's run as a tree of immutable states in a content-addressed
 store, and `Alaya.Cache` records every model response the run drew. Together they make a run
-something you can branch, replay, evaluate, intervene in, and read back. This document is the
-specification of what they store and guarantee. It depends on `Alaya.Agent` for exactly four
-things — an agent's `tools`, `view`, `next`, and `act` — and on nothing about any particular
-agent.
+something you can branch, replay, evaluate, intervene in, and read back.
 
 ## 1. States as content-addressed nodes
 
-**Problem.** A run should never be rewritten: a fork must not disturb the branch it forks from,
-a person's edit must be distinguishable from the agent's, and any point of any run must be
-addressable later.
-
-**How it works.** An agent state is a `Log × workspace`: the events so far and a snapshot of the
-working directory. Each state is persisted as a `State` object holding its parent's hash, the
+An agent state is a `Log × Cas.Hash`: the events so far, and a snapshot of the workspace —
+the content of the directory the agent acts in (`docs/agent-api.md` §3), stored in the
+content-addressed store and named by its hash. Each state is persisted as a `State` object holding its parent's hash, the
 events it **appends** to the parent's log, and its workspace snapshot's hash, and is addressed
 by the hash of its own content — like a git commit. The full log at a state is the concatenation
 of `appended` from the root down (`logOf`); the tree is append-only; there are no names or refs
@@ -73,10 +67,7 @@ flowchart TD
 
 ## 2. Draws, forks, and replay
 
-**Problem.** Continuing from a state twice must produce two different siblings, yet replaying
-an existing branch must not cost a provider call.
-
-**How it works.** The model cache (§5) stores the draws of a request as a sequence. When the
+The model cache (§7) stores the draws of a request as a sequence. When the
 trajectory continues from a state that already has `n` children of kind `turn` or `question`, it
 asks for draw `n`: `nextN (n+1)` returns the recorded draws and exactly one new one. So a branch
 already recorded replays deterministically, a new continuation is always a fresh sibling, and an
@@ -91,9 +82,7 @@ directory after it, so the state's workspace is exactly the one its last observa
 
 ## 3. People in the tree
 
-**Problem.** A run should accept a person's help without pretending it was the agent's.
-
-**How it works.** `commit HASH DIR` records a hand-edited directory as an `intervention`; with
+`commit HASH DIR` records a hand-edited directory as an `intervention`; with
 `--tell TEXT` it also appends a user turn in a fixed envelope naming the changed paths and
 carrying the text verbatim, so the model can tell a notice from the task and from tool output.
 `tell HASH TEXT` appends the same notice without a workspace change. Both are recorded as
@@ -108,10 +97,7 @@ has answered; `resume` and `step` exit with status 3 at a question and 0 at an o
 
 ## 4. Evaluation
 
-**Problem.** Grading a state means running tests the agent never saw, without letting them into
-a state the agent could continue from.
-
-**How it works.** `eval HASH --command C` checks the state's workspace out, applies an overlay —
+`eval HASH --command C` checks the state's workspace out, applies an overlay —
 a directory copied over it, or a unified diff whose touched files are first restored to the
 trajectory's base commit so the agent's edits to tests cannot survive — runs the command
 through the trajectory's executor (in the pinned container, if any), and records the verdict as
@@ -130,7 +116,7 @@ The data directory (`--data D`, default `.alaya`) holds everything one set of ru
 | `D/store/refs/env.<hex>` | pins a workspace tree, so `gc` keeps it |
 | `D/store/cache/`, `D/store/checkouts/` | the snapshot stat cache and the record of what was last materialized where; performance only |
 | `D/store/tmp/` | staging for atomic writes (write, then rename) |
-| `D/cache/v1/<hash>.json` | model response cache entries (§6) |
+| `D/cache/v1/<hash>.json` | model response cache entries (§7) |
 | `D/work/` | the working directory; wiped and re-materialized at every checkout, holds nothing durable |
 
 A workspace is a git-style Merkle tree: a **tree object** is the JSON array of its entries

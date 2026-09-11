@@ -167,10 +167,10 @@ private def runAgent (config : Config) (responses : Array Chat.Response) :
     TestM (Dialogue × Cas.Hash × Outcome) := do
   let work ← workDir
   let model ← scriptedModel responses
-  let mini := agent (Executor.onHost config.executor) work config
+  let mini := agent (Executor.onHost config.executor) config
   let sample (dialogue : Dialogue) : Result Chat.Response := do
     (← model.sample { messages := dialogue, tools := mini.tools }).next
-  let (log, stop) ← assertOk <| Agent.run mini sample (initialLog config testUname)
+  let (log, stop) ← assertOk <| Agent.run mini { dir := work } sample (initialLog config testUname)
   let store ← assertOk <| Cas.Store.create ((← scratch) / "store")
   let env ← assertOk <| store.snapshot work
   match stop with
@@ -356,7 +356,7 @@ private def cachedRuntime (responses : Array Chat.Response) (config : Config := 
   let store ← assertOk <| Cas.Store.create ((← scratch) / "store")
   let work ← workDir
   let executor := Executor.onHost config.executor
-  pure { store, workDir := work, executor, model := cached, agent := agent executor work config }
+  pure { store, workDir := work, executor, model := cached, agent := agent executor config }
 
 /-- A root for the test task over `project`. -/
 private def mkRoot (rt : Runtime) (project : System.FilePath) (image? : Option String := none)
@@ -405,7 +405,7 @@ private def askTool : Chat.ToolDefinition := {
   parameters := .object #[("message", .string)]
 }
 
-private def askingAgent (executor : Executor) (work : System.FilePath) : Agent.Agent := {
+private def askingAgent (executor : Executor) : Agent.Agent := {
   identity := .mkObj [("agent", "asking-test-agent")]
   tools := #[bashTool, askTool]
   view := fun log => log.map fun
@@ -420,12 +420,12 @@ private def askingAgent (executor : Executor) (work : System.FilePath) : Agent.A
         .ask call.id ((call.arguments.getObjVal? "message" >>= Lean.Json.getStr?).toOption.getD "?")
       else if call.name == "submit" then .done { status := "Submitted" }
       else .act call
-  act := act executor work
+  act := act executor
 }
 
 private def askingRuntime (responses : Array Chat.Response) : TestM Runtime := do
   let rt ← cachedRuntime responses
-  pure { rt with agent := askingAgent rt.executor rt.workDir }
+  pure { rt with agent := askingAgent rt.executor }
 
 def trajectorySuite : Suite := suite "trajectory" #[
   test "tell records a notice the model sees, and the run continues from it" do
