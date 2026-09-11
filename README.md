@@ -66,7 +66,7 @@ semantics, on the host or in a container.
 export XMCP_API_KEY=...
 
 root=$(alaya root "$(cat TASK.txt)" ./project --image python:3.12-slim)
-alaya resume "$root" --model xmcp:ds/deepseek-v4-flash --echo-reasoning --network none
+alaya resume "$root" --model xmcp:ds/deepseek-v4-flash --echo-reasoning
 alaya eval "$final" --tests ./hidden-tests --command "pytest -q" --timeout 1800
 
 alaya tree                      # the forest

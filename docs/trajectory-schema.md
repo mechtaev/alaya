@@ -290,8 +290,9 @@ Every command takes `--data D` and `--json` where it prints states. `root` takes
 `--temperature`, `--echo-reasoning`, `--network`, and the DGX flags `--url`/`--port`; `eval`
 takes `--timeout` (default 900 s) and `--force`. The image is resolved to a digest at `root`
 and recorded; `resume` uses it and refuses an `--image` that resolves to anything else.
-`--network none` cuts the container off, which a benchmark run should do: an agent with network
-access can go looking for its own reference solution.
+A container runs with **no network** unless `--network` names one (`--network bridge` is
+Docker's default network): an agent with network access can go looking for its own reference
+solution, so an image should carry what a task legitimately needs.
 
 Exit status: 0 when a run ended, 3 when it stopped at a question, 1 on error. Concurrent runs
 need separate data directories: the work directory and the cache are not shared safely.

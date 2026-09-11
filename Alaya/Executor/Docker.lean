@@ -34,8 +34,11 @@ structure Settings where
   Linux this must be the host user or the host can neither snapshot nor wipe them. Docker
   Desktop virtualizes ownership, so macOS leaves it unset. -/
   user? : Option String := none
-  /-- `--network`; `none` keeps docker's default. -/
-  network? : Option String := none
+  /-- `docker run --network`. Off by default: an agent with network access can fetch its own
+  reference solution, install what the task meant it to write, or ask another model, so an image
+  should carry what a task legitimately needs and the network is enabled explicitly
+  (`--network bridge`) when a run really needs it. -/
+  network? : Option String := some "none"
   /-- Extra `docker run` arguments, verbatim. -/
   extraRunArgs : Array String := #[]
   deriving Repr, Inhabited
@@ -266,12 +269,13 @@ def executor (settings : Settings) (config : Config) : Result Executor := do
 
 /-! ## Command line -/
 
-/-- Settings for a given image, taking `--container-user` and `--network` from the line. -/
+/-- Settings for a given image, taking `--container-user` and `--network` from the line. Without
+`--network` the container has no network. -/
 def settingsFor (args : Cli.Args) (image : String) : Result Settings := do
   let user? ← match args.get? "container-user" with
     | some user => pure (some user)
     | none => Result.fromIO Error.configuration defaultUser?
-  pure { image, user?, network? := args.get? "network" }
+  pure { image, user?, network? := some (args.getD "network" "none") }
 
 /-- The container named on the command line, or `none` to run on the host. -/
 def settings? (args : Cli.Args) : Result (Option Settings) := do
