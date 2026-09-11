@@ -57,9 +57,9 @@ inductive Directive where
   | sample
   /-- Run one tool call; its result becomes an observation. -/
   | act (call : Chat.ToolCall)
-  /-- Stop and wait for a person: `call` asked them `question`, and their answer is the
-  observation that will eventually answer it. -/
-  | suspend (call : Chat.ToolCall) (question : String)
+  /-- Ask a person `question` and wait: the run stops here, and their answer is recorded as
+  the observation of the call `callId` that asked. -/
+  | ask (callId : String) (question : String)
   /-- The run is over. -/
   | done (outcome : Outcome)
   deriving Inhabited
@@ -124,7 +124,7 @@ end Log
 /-- How a reference run ended: with an outcome, or at a question a person has to answer. -/
 inductive Stop where
   | outcome (outcome : Outcome)
-  | question (call : Chat.ToolCall) (question : String)
+  | question (callId : String) (question : String)
   deriving Inhabited
 
 /-- The reference loop: follows the agent's directives until it stops, sampling from `view log`
@@ -134,7 +134,7 @@ partial def run (agent : Agent) (sample : Dialogue -> Result Chat.Response) (log
     Result (Log × Stop) := do
   match agent.next log with
   | .done outcome => pure (log, .outcome outcome)
-  | .suspend call question => pure (log, .question call question)
+  | .ask callId question => pure (log, .question callId question)
   | .sample =>
     let response ← sample (agent.view log)
     run agent sample (log.push (.response response))

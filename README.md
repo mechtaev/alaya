@@ -34,7 +34,7 @@ An agent keeps a **log** of events — messages placed verbatim, model responses
 observations — and a pure **view** that projects the log onto the dialogue the model is sent.
 The view is where output is truncated and malformed turns are replaced; the log keeps
 everything. Control is a pure `next : Log -> Directive` choosing between `sample`, `act`,
-`suspend` (ask a person), and `done`; acting returns an observation whose shape the agent
+`ask` (a person), and `done`; acting returns an observation whose shape the agent
 defines. Five fields make an agent, and nothing else is needed to drive one.
 
 ## Trajectory and cache schema

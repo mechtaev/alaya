@@ -85,7 +85,7 @@ interrupted run resumes from its cache without re-billing. Children a person mak
 and counting them would push the next continuation past a draw the cache holds.
 
 A **turn** is one sample plus the acts that follow it until the agent's `next` wants to sample
-again, stops, or suspends. The driver materializes the parent's workspace, samples from
+again, stops, or asks a person. The trajectory materializes the parent's workspace, samples from
 `agent.view log` with `agent.tools`, then follows directives: each `act` snapshots the working
 directory after it, so the state's workspace is exactly the one its last observation left.
 
@@ -99,7 +99,7 @@ carrying the text verbatim, so the model can tell a notice from the task and fro
 `tell HASH TEXT` appends the same notice without a workspace change. Both are recorded as
 `Event.message`, which every view passes through unchanged.
 
-An agent that offers a tool whose `next` returns `suspend` produces a `question` state: the
+An agent that offers a tool whose `next` returns `ask` produces a `question` state: the
 calls before the ask ran, the ones after it did not, and `resume`, `step`, `commit`, and `tell`
 refuse the state until `reply HASH TEXT` records the answer as the observation of the asking
 call. Answering again makes a sibling — a fork on the answer. `waiting` lists questions no child

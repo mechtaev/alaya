@@ -396,7 +396,7 @@ private def emptyProject : TestM System.FilePath := do
   assertOk <| Result.fromIO Error.storage (IO.FS.createDirAll proj)
   pure proj
 
-/-- An agent that can ask a person: mini's `bash`, plus `ask_user`, which suspends the run.
+/-- An agent that can ask a person: mini's `bash`, plus `ask_user`, which stops the run to wait.
 Mini itself does not offer the tool, so this is what exercises the trajectory's question and
 reply path; it shows an agent needs nothing from the trajectory but the four operations. -/
 private def askTool : Chat.ToolDefinition := {
@@ -417,7 +417,7 @@ private def askingAgent (executor : Executor) (work : System.FilePath) : Agent.A
     | none => .sample
     | some call =>
       if call.name == "ask_user" then
-        .suspend call ((call.arguments.getObjVal? "message" >>= Lean.Json.getStr?).toOption.getD "?")
+        .ask call.id ((call.arguments.getObjVal? "message" >>= Lean.Json.getStr?).toOption.getD "?")
       else if call.name == "submit" then .done { status := "Submitted" }
       else .act call
   act := act executor work
@@ -464,7 +464,7 @@ def trajectorySuite : Suite := suite "trajectory" #[
         "the notice lists the added path and the message"
     | _ => fail "expected a notice",
 
-  test "an ask_user call suspends the run, and a reply continues it" do
+  test "an ask_user call stops the run at a question, and a reply continues it" do
     let ask : Chat.ToolCall :=
       { id := "q1", name := "ask_user", arguments := .mkObj [("message", "Exact wording or mine?")] }
     let rt ← askingRuntime #[

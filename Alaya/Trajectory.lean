@@ -482,8 +482,8 @@ private partial def follow (rt : Runtime) (log : Log) (appended : Log) (env : Ha
   match rt.agent.next log with
   | .sample => pure (appended, env, none, .continue)
   | .done outcome => pure (appended, env, none, .outcome outcome)
-  | .suspend call text =>
-    let question : Question := { callId := call.id, text }
+  | .ask callId text =>
+    let question : Question := { callId, text }
     pure (appended, env, some question, .question question)
   | .act call =>
     let content ← rt.agent.act call
