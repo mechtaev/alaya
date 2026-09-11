@@ -60,7 +60,7 @@ private def responseFromJson (json : Lean.Json) : Except String Chat.Response :=
   let finishReason? := (json.getObjVal? "finish_reason" >>= Lean.Json.getStr?).toOption
   -- Absent in entries written before it was recorded, which is exactly `none`.
   let reasoning? := (json.getObjVal? "reasoning_content" >>= Lean.Json.getStr?).toOption
-  pure { content?, toolCalls, usage?, finishReason?, reasoning?, raw := .null }
+  pure { content?, toolCalls, usage?, finishReason?, reasoning? }
 
 private def responsesFromJson (key : String) (json : Lean.Json) : Except String (Array Chat.Response) := do
   let version ← liftJson "cached entry has no version" <| json.getObjVal? "version" >>= Lean.Json.getNat?
@@ -150,7 +150,7 @@ def persistent (inner : Model) (config : Config) : Result Model := do
         match responses[0]? with
         | some response => pure response
         | none => throw <| .protocol "model returned no responses"
-      pure { next, nextN? := some nextN }
+      pure (Model.Stream.withNative next nextN)
   }
 
 end Alaya.Cache

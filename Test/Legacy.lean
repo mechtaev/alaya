@@ -19,7 +19,7 @@ private def get (result : Result alpha) : IO alpha :=
   result.toUserIO
 
 private def response (value : Nat) : Chat.Response :=
-  { content? := some (toString value), raw := .null }
+  { content? := some (toString value) }
 
 private def mockModel : IO (Model × IO Nat) := do
   let count ← IO.mkRef 0
@@ -43,7 +43,7 @@ private def protocolTests : IO Unit := do
   expectEqual "input tokens" (parsed.usage?.bind fun usage => usage.input?) (some 7)
   expectEqual "output tokens" (parsed.usage?.bind fun usage => usage.output?) (some 3)
   let schema := JsonSchema.object #[("city", .string)]
-  let invalid : Chat.Response := { content? := some "not JSON", raw := .null }
+  let invalid : Chat.Response := { content? := some "not JSON" }
   let error ← (invalid.structured schema).toBaseIO
   match error with
   | .error (.structuredOutput _) => pure ()
@@ -79,21 +79,20 @@ private def toolCallTests : IO Unit := do
 private def structuredOutputTests : IO Unit := do
   let schema := JsonSchema.object #[("city", .string)]
   -- Native structured output parses and validates the raw content directly.
-  let native : Chat.Response := { content? := some "{\"city\": \"Paris\"}", raw := .null }
+  let native : Chat.Response := { content? := some "{\"city\": \"Paris\"}" }
   let value ← get <| native.structured schema
   expectEqual "native structured city"
     ((value.getObjVal? "city" >>= Json.getStr?).toOption) (some "Paris")
   -- The markdown-code-fence fallback extracts the JSON from a fenced block before validating.
   let fenced : Chat.Response := {
     content? := some "Sure:\n```json\n{\"city\": \"Paris\"}\n```\nDone."
-    raw := .null
     structuredOutput := .markdownCodeFence
   }
   let fencedValue ← get <| fenced.structured schema
   expectEqual "fenced structured city"
     ((fencedValue.getObjVal? "city" >>= Json.getStr?).toOption) (some "Paris")
   -- A value that violates the schema is rejected as a typed structured-output error.
-  let wrong : Chat.Response := { content? := some "{\"city\": 7}", raw := .null }
+  let wrong : Chat.Response := { content? := some "{\"city\": 7}" }
   let error ← (wrong.structured schema).toBaseIO
   match error with
   | .error (.structuredOutput _) => pure ()

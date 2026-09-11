@@ -10,7 +10,7 @@ instance prompts, the `bash` tool schema, tool-call parsing and its format-error
 JSON observation format (including the ≥10000-character truncation and jinja `tojson`'s
 HTML-safe/ensure-ASCII escaping), and the step / consecutive-format-error limits.
 
-Two adaptations, both forced by the split between what is recorded and what is shown:
+Three adaptations, the first two forced by the split between what is recorded and what is shown:
 
 * **Ending a run is a tool call.** Mini ends a run when a command prints the sentinel
   `COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT` on its first line — its environment scans every
@@ -18,6 +18,9 @@ Two adaptations, both forced by the split between what is recorded and what is s
   to read a tool's output to know the run is over. The two sentences of the prompt that name the
   sentinel change accordingly (`miniSubmitInstruction` → `submitInstruction`), and so does the
   last line of the format-error message.
+* **Tool schemas are strict.** `JsonSchema` serializes every object with all properties
+  required and `"additionalProperties": false`, so the `bash` schema the model sees carries that
+  one extra key mini's does not.
 * **The environment is a snapshot.** Mini runs each command in a persistent working directory;
   here the directory is snapshotted after every command by the trajectory, so a state can be
   branched and replayed. Where the commands run is an `Alaya.Executor`; the commands themselves
@@ -106,28 +109,20 @@ def initialLog (config : Config) (uname : Uname) : Log :=
 
 /-! ## Tools -/
 
-/-- The `bash` tool, serialized byte-for-byte as mini's `BASH_TOOL`. -/
+/-- The `bash` tool: mini's `BASH_TOOL`, serialized in strict mode. The one visible difference
+from mini's JSON is the `"additionalProperties": false` every strict object carries. -/
 def bashTool : Chat.ToolDefinition := {
   name := "bash"
   description := "Execute a bash command"
   parameters := .object #[("command", .string (description? := some "The bash command to execute"))]
-  parametersJson? := some <| .mkObj [
-    ("type", "object"),
-    ("properties", .mkObj [
-      ("command", .mkObj [("type", "string"), ("description", "The bash command to execute")])]),
-    ("required", .arr #[("command" : Lean.Json)])]
 }
 
-/-- The tool that ends a run, in place of mini's output sentinel. -/
+/-- The tool that ends a run, in place of mini's output sentinel. `message` is required, so the
+model always says what it did; it becomes the run's submission. -/
 def submitTool : Chat.ToolDefinition := {
   name := "submit"
   description := "Finish the task. Call this once your changes are complete; nothing runs after it."
   parameters := .object #[("message", .string (description? := some "A short summary of what you did"))]
-  parametersJson? := some <| .mkObj [
-    ("type", "object"),
-    ("properties", .mkObj [
-      ("message", .mkObj [("type", "string"), ("description", "A short summary of what you did")])]),
-    ("required", .arr #[])]
 }
 
 /-- The tools offered on every sample. -/

@@ -260,7 +260,7 @@ passes through, and both kinds read as `turn`. New writes are always version 2.
 
 `responses[i]` is draw `i` of that request under that model identity. The stored key is checked
 against the file name on load, and a corrupt entry reads as empty and is replaced on the next
-successful sample. The provider's `raw` payload is not stored. The key contains the full
+successful sample. The key contains the full
 request, so anything that changes what the model is sent — the view, the tool list, the model
 identity including options such as reasoning echo — changes the key, and a forest recorded under
 one will not replay under another.

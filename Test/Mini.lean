@@ -80,21 +80,22 @@ private def submitCall (id : String) (message : String := "") : Chat.ToolCall :=
   { id, name := "submit", arguments := .mkObj [("message", (message : Lean.Json))] }
 
 private def responseWith (calls : Array Chat.ToolCall) (finish := "tool_calls") : Chat.Response :=
-  { toolCalls := calls, finishReason? := some finish, raw := .null }
+  { toolCalls := calls, finishReason? := some finish }
 
 private def actionSummary : Action -> String × String
   | .bash id command => (id, command.compress)
   | .submit id message => (id, "submit:" ++ message)
 
 def parseSuite : Suite := suite "mini.parse" #[
-  iotest "bash tool schema is exact" do
-    -- mini's BASH_TOOL, compared field-for-field (Json.compress emits keys in sorted order).
-    let expected := "{\"function\":{\"description\":\"Execute a bash command\",\"name\":\"bash\",\"parameters\":{\"properties\":{\"command\":{\"description\":\"The bash command to execute\",\"type\":\"string\"}},\"required\":[\"command\"],\"type\":\"object\"}},\"type\":\"function\"}"
+  iotest "bash tool schema is mini's, in strict mode" do
+    -- mini's BASH_TOOL plus the `additionalProperties: false` every strict object carries
+    -- (Json.compress emits keys in sorted order).
+    let expected := "{\"function\":{\"description\":\"Execute a bash command\",\"name\":\"bash\",\"parameters\":{\"additionalProperties\":false,\"properties\":{\"command\":{\"description\":\"The bash command to execute\",\"type\":\"string\"}},\"required\":[\"command\"],\"type\":\"object\"}},\"type\":\"function\"}"
     if bashTool.toJson.compress != expected then
       throw <| IO.userError s!"tool schema drift:\n{bashTool.toJson.compress}",
 
   test "no tool calls is a format error" do
-    match parseActions { content? := some "just prose", finishReason? := some "stop", raw := .null } with
+    match parseActions { content? := some "just prose", finishReason? := some "stop" } with
     | .formatError msg => check (contains msg "No tool calls found") "expected no-toolcall error"
     | .actions _ => fail "expected a format error",
 
@@ -130,7 +131,7 @@ def parseSuite : Suite := suite "mini.parse" #[
       check (contains msg "Missing 'command' argument in bash tool call.") "missing-command joins it"
     | .actions _ => fail "expected a format error"
     -- when the provider reports a length cut-off, the truncation notice renders instead
-    match parseActions { toolCalls := #[bad], finishReason? := some "length", raw := .null } with
+    match parseActions { toolCalls := #[bad], finishReason? := some "length" } with
     | .formatError msg =>
       check (contains msg "output token limit (finish_reason=length)") "truncation notice"
     | .actions _ => fail "expected a format error",
@@ -217,7 +218,7 @@ def runSuite : Suite := suite "mini.run" #[
 
   test "a format error is appended and the offending turn is dropped" do
     let (dialogue, _, outcome) ← runAgent { task := "t" } #[
-      { content? := some "I forgot to call a tool", finishReason? := some "stop", raw := .null },
+      { content? := some "I forgot to call a tool", finishReason? := some "stop" },
       responseWith #[submitCall "c1"]]
     assertEqual "submitted after recovery" outcome.status "Submitted"
     -- system, instance, user(format error), assistant(submit). The bad assistant turn is not kept.
@@ -227,7 +228,7 @@ def runSuite : Suite := suite "mini.run" #[
     | _ => fail "expected a user format-error message at index 2",
 
   test "repeated format errors exit" do
-    let bad : Chat.Response := { content? := some "no tool", finishReason? := some "stop", raw := .null }
+    let bad : Chat.Response := { content? := some "no tool", finishReason? := some "stop" }
     let (dialogue, _, outcome) ← runAgent { task := "t", maxConsecutiveFormatErrors := 3 }
       #[bad, bad, bad, bad]
     assertEqual "exit status" outcome.status "RepeatedFormatError"
@@ -255,7 +256,7 @@ def runSuite : Suite := suite "mini.run" #[
     let bad : Chat.Response := {
       toolCalls := #[{ id := "c1", name := "bash", arguments := .null,
                        invalidArguments? := some "{\"command\": \"ls" }],
-      finishReason? := some "length", raw := .null }
+      finishReason? := some "length" }
     let (dialogue, _, outcome) ← runAgent { task := "t" } #[bad, responseWith #[submitCall "c2"]]
     assertEqual "submitted after recovery" outcome.status "Submitted"
     -- system, instance, user(truncation notice), assistant(submit); the bad turn is dropped.
@@ -519,7 +520,7 @@ def trajectorySuite : Suite := suite "trajectory" #[
       .message (.system "sys"), .message (.user "task text"),
       .response {
         content? := some "thinking", reasoning? := some "trace", finishReason? := some "tool_calls",
-        usage? := some { input? := some 10, output? := some 5 }, raw := .null,
+        usage? := some { input? := some 10, output? := some 5 },
         toolCalls := #[
           { id := "c1", name := "bash", arguments := .mkObj [("command", ("ls" : Lean.Json))] },
           { id := "c2", name := "bash", arguments := .null, invalidArguments? := some "{\"command\": \"x" }] },

@@ -101,7 +101,7 @@ private def usageFromJson? (json : Lean.Json) : Option Chat.TokenUsage :=
       total? := (usage.getObjVal? "total" >>= Lean.Json.getNat?).toOption }
   | _ => none
 
-/-- A response, minus the provider's raw payload: everything the view and the report use. -/
+/-- A response, as recorded. -/
 def responseToJson (r : Chat.Response) : Lean.Json :=
   .mkObj [
     ("content", r.content?.map Lean.Json.str |>.getD .null),
@@ -115,7 +115,7 @@ def responseFromJson (json : Lean.Json) : Except String Chat.Response := do
   let toolCalls ← toolCallsFromJson json
   let reasoning? := (json.getObjVal? "reasoning" >>= Lean.Json.getStr?).toOption
   let finishReason? := (json.getObjVal? "finish_reason" >>= Lean.Json.getStr?).toOption
-  pure { content?, toolCalls, reasoning?, finishReason?, usage? := usageFromJson? json, raw := .null }
+  pure { content?, toolCalls, reasoning?, finishReason?, usage? := usageFromJson? json }
 
 def eventToJson : Event -> Lean.Json
   | .message m => .mkObj [("type", "message"), ("message", messageToJson m)]

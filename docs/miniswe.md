@@ -14,7 +14,7 @@ tests compare the port's output to them character by character:
 
 - the system prompt and the instance prompt, for both the Linux and the macOS variant (the
   macOS one adds a note about `sed -i ''`);
-- the `bash` tool schema, serialized exactly as mini's `BASH_TOOL`;
+- the `bash` tool schema, mini's `BASH_TOOL` in strict mode (see §8);
 - the observation envelope, including jinja's `tojson` escaping (`ensure_ascii`, and `<`, `>`,
   `&`, `'` as `\uXXXX`) and the truncation at 10 000 characters;
 - the format-error messages, including the truncation notice for a response the provider cut
@@ -40,7 +40,8 @@ down to jinja's stripped trailing newline, is mini's.
 
 ## 3. Tools
 
-**`bash`** is mini's, with the exact schema `{"command": string}`.
+**`bash`** is mini's: an object with one required string property, `command`. It is serialized
+in strict mode, so the model sees mini's schema plus `"additionalProperties": false`.
 
 **`submit`** is the port's, and it is the first deliberate deviation. Mini ends a run when a
 command's output starts with the line `COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT`: its environment
@@ -48,8 +49,8 @@ scans every command's output for the sentinel, and everything after that line is
 submission. That puts the end of the run inside a tool's output, which means whoever drives the
 agent has to read and interpret observations. Here the driver is the trajectory, which treats
 observations as opaque JSON by design, so the end of a run has to be visible in the log's
-structure instead: the model calls `submit`, optionally with a `message`, and `next` returns
-`done`. The prompt's two instructions and the closing hint of the format-error message say so.
+structure instead: the model calls `submit` with a `message` saying what it did, and `next`
+returns `done` with that message as the submission. The prompt's two instructions and the closing hint of the format-error message say so.
 
 The tool list is sent with every request, so this changes every cache key relative to a mini run
 with the sentinel; a trajectory recorded before the change still loads, but continuing it asks
@@ -165,6 +166,8 @@ run `submit`: `next` ends the run first.
 ## 8. Deviations, complete list
 
 - `submit` in place of the output sentinel, and the three sentences that name it.
+- Tool schemas are strict: the `bash` schema carries `"additionalProperties": false`, which
+  mini's does not.
 - The environment is a snapshot of the working directory, not a persistent machine.
 - The wire envelope always carries `tool_choice: auto`, `response_format: text`, and a
   temperature, which mini leaves implicit; no model behaviour depends on them.

@@ -153,14 +153,15 @@ def model (config : Config) : Result Model := do
         then fields ++ [("echo_reasoning", .bool true), ("reasoning_window", (config.reasoningWindow : Lean.Json))]
         else fields
     structuredOutput := config.structuredOutput
-    sample := fun request => pure {
-      next := do
+    sample := fun request =>
+      let next : Result Chat.Response := do
         let responses ← complete config temperature request 1
         match responses[0]? with
         | some response => pure response
         | none => throw <| .protocol "provider returned no responses"
-      nextN? := if config.nativeBatching then some (complete config temperature request) else none
-    }
+      pure <| if config.nativeBatching
+        then Model.Stream.withNative next (complete config temperature request)
+        else Model.Stream.ofNext next
   }
 
 /-- Builds a provider model whose API key (and optionally base URL) come from the environment.

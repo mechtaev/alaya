@@ -56,11 +56,8 @@ end Message
 structure ToolDefinition where
   name : String
   description : String
+  /-- Serialized in strict mode: every property required, no unspecified ones. -/
   parameters : JsonSchema
-  /-- When set, this exact JSON is used for the `parameters` field instead of serializing
-  `parameters`. Lets a caller reproduce a provider's tool schema byte-for-byte (e.g. one that
-  omits `additionalProperties`). -/
-  parametersJson? : Option Lean.Json := none
   deriving Inhabited
 
 namespace ToolDefinition
@@ -71,7 +68,7 @@ def toJson (tool : ToolDefinition) : Lean.Json :=
     ("function", .mkObj [
       ("name", tool.name),
       ("description", tool.description),
-      ("parameters", tool.parametersJson?.getD tool.parameters.toJson)
+      ("parameters", tool.parameters.toJson)
     ])
   ]
 
@@ -164,7 +161,8 @@ structure TokenUsage where
   total? : Option Nat := none
   deriving Repr, Inhabited
 
-/-- A parsed OpenAI-compatible assistant response, retaining the original provider payload. -/
+/-- A parsed OpenAI-compatible assistant response: the fields the library reads. Anything else a
+provider sends is dropped here; what is later wanted gets a named field, as `reasoning?` did. -/
 structure Response where
   content? : Option String := none
   toolCalls : Array ToolCall := #[]
@@ -174,7 +172,6 @@ structure Response where
   finishReason? : Option String := none
   /-- The provider's `reasoning_content`, when it reports one (see `Message.assistant`). -/
   reasoning? : Option String := none
-  raw : Lean.Json
   structuredOutput : StructuredOutput := .native
   deriving Inhabited
 
@@ -238,7 +235,7 @@ def fromJsons (raw : Lean.Json) : Result (Array Response) :=
         | .error _ => pure #[]
       let finishReason? := (choice.getObjVal? "finish_reason" >>= Lean.Json.getStr?).toOption
       let reasoning? := (message.getObjVal? "reasoning_content" >>= Lean.Json.getStr?).toOption
-      pure { content?, toolCalls, usage?, finishReason?, reasoning?, raw }
+      pure { content?, toolCalls, usage?, finishReason?, reasoning? }
 
 def fromJson (raw : Lean.Json) : Result Response := do
   let responses ← fromJsons raw

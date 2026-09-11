@@ -5,19 +5,37 @@ import Alaya.Retry
 
 namespace Alaya
 
+/-- The draws a request names, in order. `next` is the next one; `nextN` draws several. -/
 structure Model.Stream where
   next : Result Chat.Response
-  nextN? : Option (Nat -> Result (Array Chat.Response)) := none
+  /-- A layer's own way to draw several at once, when it has one better than repeating `next`:
+  the provider sends `n` in one request, the concurrent batcher fans out. Set through
+  `Stream.withNative`; read only by `nextN`, which falls back to `next` otherwise. -/
+  private nativeNextN? : Option (Nat -> Result (Array Chat.Response)) := none
 
 namespace Model.Stream
 
+/-- A stream that draws one at a time. -/
+def ofNext (next : Result Chat.Response) : Stream := { next }
+
+/-- A stream with its own multi-draw implementation. -/
+def withNative (next : Result Chat.Response) (nativeNextN : Nat -> Result (Array Chat.Response)) :
+    Stream := { next, nativeNextN? := some nativeNextN }
+
+/-- The next `n` draws: the layer's own implementation when it has one, otherwise `next` `n`
+times. -/
 def nextN (stream : Stream) (n : Nat) : Result (Array Chat.Response) :=
-  match stream.nextN? with
-  | some nextN => nextN n
+  match stream.nativeNextN? with
+  | some native => native n
   | none => do
     let mut responses := #[]
     for _ in List.range n do responses := responses.push (← stream.next)
     pure responses
+
+/-- The same stream with every draw passed through `wrap` — how retry adds itself to both paths. -/
+def mapDraws (stream : Stream) (wrap : {α : Type} -> Result α -> Result α) : Stream :=
+  { next := wrap stream.next
+    nativeNextN? := stream.nativeNextN?.map fun native => fun n => wrap (native n) }
 
 end Model.Stream
 
@@ -51,10 +69,7 @@ def retry (inner : Model) (config : Retry.Config) : Result Model :=
     structuredOutput := inner.structuredOutput
     sample := fun request => do
       let stream ← inner.sample request
-      pure {
-        next := Retry.run config stream.next
-        nextN? := stream.nextN?.map fun nextN => fun n => Retry.run config (nextN n)
-      }
+      pure (stream.mapDraws fun action => Retry.run config action)
   }
 
 /-- Selects native, concurrent, or sequential sampling on top of retried single requests. -/
@@ -71,7 +86,7 @@ def batch (inner : Model) (mode : BatchSampling) : Result Model := do
       let nextN (n : Nat) : Result (Array Chat.Response) :=
         match mode with
         | .native => stream.nextN n
-        | .sequential => Model.Stream.nextN { next := stream.next } n
+        | .sequential => (Model.Stream.ofNext stream.next).nextN n
         | .concurrent _ => do
           -- Each request blocks its thread on a curl subprocess for the whole round-trip, so run it
           -- on a dedicated thread rather than a shared task-pool worker. Default-priority tasks would
@@ -105,7 +120,7 @@ def batch (inner : Model) (mode : BatchSampling) : Result Model := do
         match responses[0]? with
         | some response => pure response
         | none => throw <| .protocol "model returned no responses"
-      pure { next, nextN? := some nextN }
+      pure (Model.Stream.withNative next nextN)
   }
 
 def repeatable (inner : Model) : Result Model := do

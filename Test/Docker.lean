@@ -53,7 +53,7 @@ private def scripted (responses : Array Chat.Response) : TestM Model := do
 private def toolResponse (command : String) : Chat.Response :=
   { toolCalls := #[{ id := "c1", name := "bash"
                      arguments := .mkObj [("command", (command : Lean.Json))] }]
-    finishReason? := some "tool_calls", raw := .null }
+    finishReason? := some "tool_calls" }
 
 private def workspace : TestM System.FilePath := do
   let work := (← scratch) / "work"
