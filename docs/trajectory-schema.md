@@ -69,7 +69,7 @@ driven by `resume` or `step`.
 | `reply` | `alaya reply` | one observation: the person's answer to the question, verbatim | the parent's |
 | `intervention` | `alaya commit` | nothing, or one notice when `--tell` is given | the directory the person edited |
 | `message` | `alaya tell` | one notice carrying the person's text | the parent's |
-| `evaluation` | `alaya eval` | nothing; the verdict is on the state itself | the parent's |
+| `evaluation` | `alaya eval` | nothing; the verdict is on the state itself | the checkout after the grader ran |
 
 Two kinds constrain what may follow them. A `question` waits: only `reply` may be its child until
 one exists. An `evaluation` is a leaf: it is a verdict on its parent, not a point a run can go on
@@ -107,7 +107,7 @@ adbac197aea8  root  make the test suite pass
     9d0e11a2b7c4  commit  fixed the fixture by hand
       2c7f0a9e5d31  bash  pytest -q
         e5a1c3d9f802  submit  done  [Submitted]
-          7b19d4c2ff01  eval  [pass]  cp -R ./hidden-tests/. {checkout}/ && pytest -q
+          7b19d4c2ff01  eval  [pass]  cp -R ./hidden-tests/. {checkout}/ && cd {checkout} && pytest -q
     c61754d16c7a  ask  Should I keep the old API?  [Waiting]
 ```
 
@@ -362,20 +362,23 @@ it knows how to hand a program the state's files, collect what the program says,
 
 ### The grader
 
-A grader is a shell command run on the host. Before it runs, the trajectory materializes the
-state's workspace into a fresh directory, the **checkout**, and creates an empty **output
-directory**; the command receives both by substitution:
+A grader is a shell command run on the host, in the directory `alaya` was invoked from, so
+relative paths in it mean what they mean on the person's command line. Before it runs, the
+trajectory materializes the state's workspace into a fresh directory, the **checkout**, and
+creates an empty **output directory**; the command receives both, as absolute paths, by
+substitution:
 
 | Placeholder | Expands to |
 | --- | --- |
-| `{checkout}` | the directory holding the state's files; also the command's working directory |
+| `{checkout}` | the directory holding the state's files |
 | `{out}` | an empty directory for anything the grader wants kept |
 
 The grader may do anything to the checkout: copy tests over it, apply a patch, build it, start a
 container with it mounted, or rebuild a clean project elsewhere and carry only the agent's edits
-across. None of that touches a state. The checkout is discarded when the grader finishes, and the
-evaluation's own `workspace` is its parent's, so the tree records what was graded and the
-grader's verdict, never the grader's working files.
+across. When it finishes, the checkout is snapshotted as the evaluation's `workspace` and
+discarded, so the tree records what the grader did to the files — the tests it copied in, the
+artefacts it built — as the change from the graded state to the evaluation. None of it reaches
+a state a run continues from: an evaluation is a leaf.
 
 ### The verdict
 
@@ -391,19 +394,26 @@ When the grader exits, the trajectory records:
 
 A state **passed** when `summary?` has a boolean `passed` field and it is true; otherwise when the
 exit status is zero. A grader that only runs a test suite needs no `verdict.json`: the suite's
-exit status is the verdict. A grader with more to say — per-test statuses, a score, a reason —
-writes `verdict.json` with `passed` and any other fields, and puts its reports and logs beside
-it; `alaya show` prints the summary and names the evidence, and `alaya checkout HASH DIR
---evidence` yields the files.
+exit status is the verdict. A grader with more to say writes `verdict.json` and puts its reports
+and logs beside it. Two of its fields have a fixed meaning; the rest are the grader's own:
+
+| Field | Meaning |
+| --- | --- |
+| `passed` | boolean; the verdict |
+| `score` | `{"passed": n, "total": m}`: how many of the grader's checks passed, out of how many |
+
+The score is shown wherever the verdict is — `tree`, `show`, the report — as `n/m`, so a partial
+result is a number rather than a bare `fail`. `alaya show` prints the whole summary and names the
+evidence, and `alaya checkout HASH DIR --evidence` yields the files.
 
 *An evaluation: the grader runs on the host over a checkout; the state records the verdict.*
 
 ```mermaid
 flowchart LR
-  S["state e5a1c3<br/>workspace W"] -->|"materialize W"| C["checkout<br/>(discarded afterwards)"]
+  S["state e5a1c3<br/>workspace W"] -->|"materialize W"| C["checkout<br/>(snapshotted afterwards)"]
   G["grader command<br/>{checkout} {out}"] --> C
   G --> O["out/<br/>verdict.json · report.md · …"]
-  C -.->|"exit status, output"| E["evaluation 7b19d4<br/>grader · returncode · output · summary · evidence"]
+  C -.->|"exit status, output, snapshot"| E["evaluation 7b19d4<br/>workspace W' · grader · returncode · output · summary · evidence"]
   O -.->|"snapshot"| E
   S --> E
 ```
@@ -413,15 +423,16 @@ again and adds a sibling. Different grader commands are different evaluations of
 
 ```sh
 # A hidden test suite, copied over the checkout; the suite's exit status is the verdict.
-alaya eval e5a1c3 --grader 'cp -R ./hidden-tests/. {checkout}/ && pytest -q' --timeout 1800
+alaya eval e5a1c3 --grader 'cp -R ./hidden-tests/. {checkout}/ && cd {checkout} && pytest -q' --timeout 1800
 # 7b19d4c2ff01  pass  (48210 ms)
 
 # A patch of the tests against the original files, then the suite.
-alaya eval e5a1c3 --grader 'patch -p1 -d {checkout} < ./tests.diff && pytest -q tests/test_foo.py'
+alaya eval e5a1c3 --grader 'patch -p1 -d {checkout} < ./tests.diff && cd {checkout} && pytest -q tests/test_foo.py'
 
 # A grading program with its own verdict: it rebuilds a clean project from a source it trusts,
 # carries the agent's edits across, and writes verdict.json and a report into {out}.
 alaya eval e5a1c3 --grader 'grade-project --candidate {checkout} --source ./benchmark --report-dir {out}'
+# 3c9e02a71b5d  fail 1 155/232  (61377 ms)
 
 alaya show 7b19d4                        # verdict, summary, evidence hash, and the grader's output
 alaya checkout 7b19d4 ./report --evidence  # the grader's report files
@@ -640,7 +651,7 @@ need separate data directories: the work directory and the cache are not shared 
   sent to produce a turn is `agent.view (logOf parent)` with `agent.tools`.
 - Continuing from a state with `n` turn-or-question children asks for draw `n`; other children
   never consume a draw.
-- A state's workspace is the snapshot taken after its last act; an evaluation's is its parent's,
-  and nothing continues from it.
+- A state's workspace is the snapshot taken after its last act; an evaluation's is the checkout
+  after the grader ran, and nothing continues from it.
 - A waiting state grows only by `reply`.
 - The trajectory reads no observation's content and knows no tool's name.

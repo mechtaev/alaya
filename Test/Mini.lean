@@ -556,13 +556,14 @@ def trajectorySuite : Suite := suite "trajectory" #[
     let tests ← testsDir
     let scratch := (← scratch) / "eval"
     let node ← assertOk <| evaluate rt.store scratch root
-      ("cp -R " ++ tests.toString ++ "/. {checkout}/ && test -f tests/extra.txt")
+      ("cp -R " ++ tests.toString ++ "/. {checkout}/ && test -f {checkout}/tests/extra.txt")
     let state ← assertOk (getState rt.store node)
     assertEqual "kind" state.kind Kind.evaluation
     assertEqual "verdict" (state.evaluation?.map (·.passed)) (some true)
-    -- The grader's copy went into the checkout, not into any state: the evaluation's workspace
-    -- is its parent's, and the next turn from the root does not see the tests either.
-    assertEqual "workspace is the parent's" state.workspace (← assertOk (getState rt.store root)).workspace
+    -- The evaluation's workspace is the checkout as the grader left it, and the next turn from
+    -- the root does not see the tests.
+    check (← assertOk (rt.store.entryAt? state.workspace "tests/extra.txt")).isSome
+      "the evaluation's workspace holds what the grader did"
     let child ← assertOk <| stepOnce rt "test:model" root
     check (← assertOk (rt.store.entryAt? (← assertOk (getState rt.store child)).workspace "tests/extra.txt")).isNone
       "a grader's files must never reach a state the agent continues from"
@@ -598,13 +599,15 @@ def trajectorySuite : Suite := suite "trajectory" #[
     let scratch := (← scratch) / "eval"
     -- Exit status 1, but the verdict says passed: the verdict wins. The report beside it is kept.
     let grader := "test -f {checkout}/app.txt && " ++
-      "printf '{\"passed\": true, \"score\": 3}' > {out}/verdict.json && echo detail > {out}/report.txt && exit 1"
+      "printf '{\"passed\": true, \"score\": {\"passed\": 3, \"total\": 4}}' > {out}/verdict.json && " ++
+      "echo detail > {out}/report.txt && exit 1"
     let node ← assertOk <| evaluate rt.store scratch root grader
     let state ← assertOk (getState rt.store node)
     let some e := state.evaluation? | fail "expected an evaluation"
     assertEqual "returncode" e.returncode 1
     check e.passed "verdict.json says passed"
-    assertEqual "score" (e.summary?.bind fun s => (s.getObjVal? "score" >>= Lean.Json.getNat?).toOption) (some 3)
+    assertEqual "score" e.score? (some (3, 4))
+    assertEqual "verdict line" e.verdict "pass 3/4"
     let some evidence := e.evidence? | fail "expected the output directory as evidence"
     assertEqual "report kept"
       ((← assertOk (rt.store.readPath evidence "report.txt")).map (String.fromUTF8? ·))

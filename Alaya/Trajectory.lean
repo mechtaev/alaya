@@ -115,7 +115,7 @@ inductive Kind where
   | turn
   /-- A person's workspace change, with the parent's log — plus a notice, when they left one. -/
   | intervention
-  /-- A grader's verdict on a state; always a leaf. -/
+  /-- A grader's verdict on a state, with the checkout as the grader left it; always a leaf. -/
   | evaluation
   /-- A person's message to the agent with no workspace change: see `tell`. -/
   | message
@@ -191,6 +191,21 @@ def Evaluation.passed (evaluation : Evaluation) : Bool :=
   match evaluation.summary?.bind fun s => (s.getObjVal? "passed" >>= Lean.Json.getBool?).toOption with
   | some verdict => verdict
   | none => evaluation.returncode == 0
+
+/-- How many of the grader's checks passed, out of how many: the summary's
+`score: {passed, total}`, when it has one. -/
+def Evaluation.score? (evaluation : Evaluation) : Option (Nat × Nat) := do
+  let score ← (← evaluation.summary?).getObjVal? "score" |>.toOption
+  let passed ← (score.getObjVal? "passed" >>= Lean.Json.getNat?).toOption
+  let total ← (score.getObjVal? "total" >>= Lean.Json.getNat?).toOption
+  pure (passed, total)
+
+/-- `pass` or `fail`, with the exit status of a failure and the score when there is one. -/
+def Evaluation.verdict (evaluation : Evaluation) : String :=
+  let base := if evaluation.passed then "pass" else s!"fail {evaluation.returncode}"
+  match evaluation.score? with
+  | some (passed, total) => s!"{base} {passed}/{total}"
+  | none => base
 
 /-- A node of the trajectory tree, content-addressed in the store. -/
 structure State where
@@ -538,7 +553,7 @@ private def nonEmpty (dir : System.FilePath) : Result Bool :=
   Result.fromIO Error.storage do pure (!(← dir.readDir).isEmpty)
 
 /-- Runs `grader` on the host against a fresh checkout of `hash`'s workspace and records the
-verdict as a leaf child. `scratch` is a directory the trajectory may wipe: the checkout and the
+verdict as a leaf child whose workspace is the checkout after the grader ran. `scratch` is a directory the trajectory may wipe: the checkout and the
 grader's output directory are made under it. -/
 def evaluate (store : Store) (scratch : System.FilePath) (hash : Hash) (grader : String)
     (timeoutSeconds : Nat := 900) (force : Bool := false) : Result Hash := do
@@ -547,8 +562,7 @@ def evaluate (store : Store) (scratch : System.FilePath) (hash : Hash) (grader :
     throw <| .configuration "cannot evaluate an evaluation: it is already a leaf"
   if !force then
     if let some existing ← evaluationOf? store hash grader then return existing
-  -- Absolute paths: the command runs with the checkout as its working directory, where a
-  -- relative `{checkout}` or `{out}` would not resolve.
+  -- Absolute, so a grader that changes directory still finds them.
   Result.fromIO Error.storage (IO.FS.createDirAll scratch)
   let scratch ← Result.fromIO Error.storage (IO.FS.realPath scratch)
   let checkout := scratch / "checkout"
@@ -559,7 +573,8 @@ def evaluate (store : Store) (scratch : System.FilePath) (hash : Hash) (grader :
   let command := expandGrader grader checkout out
   let runner := Executor.onHost { timeoutSeconds }
   let started ← Result.fromIO Error.storage IO.monoMsNow
-  let output ← Result.fromIO Error.storage (runner.bash checkout command)
+  -- In the caller's directory, so relative paths in the command are the person's, not the checkout's.
+  let output ← Result.fromIO Error.storage (runner.bash (← Result.fromIO Error.storage IO.currentDir) command)
   let elapsedMs := (← Result.fromIO Error.storage IO.monoMsNow) - started
   let evidence? ← if ← nonEmpty out then some <$> store.snapshot out else pure none
   let summary? ← Result.fromIO Error.storage do
@@ -568,9 +583,12 @@ def evaluate (store : Store) (scratch : System.FilePath) (hash : Hash) (grader :
     else match Lean.Json.parse (← IO.FS.readFile verdict) with
       | .ok json => pure (some json)
       | .error _ => pure none
+  -- The evaluation's workspace is the checkout as the grader left it, so the tree shows what
+  -- the grader did to the files; the leaf rule keeps it out of any state a run continues from.
+  let graded ← store.snapshot checkout
   Result.fromIO Error.storage (IO.FS.removeDirAll checkout)
   putState store {
-    parent? := some hash, workspace := state.workspace, kind := .evaluation, appended := #[]
+    parent? := some hash, workspace := graded, kind := .evaluation, appended := #[]
     image? := state.image?
     evaluation? := some {
       grader, returncode := output.exitCode?.map (fun c => Int.ofNat c.toNat) |>.getD (-1), elapsedMs
@@ -670,9 +688,9 @@ private def flatten (s : String) (limit : Nat := 60) : String :=
   let flat := (s.replace "\n" " ").replace "\r" " "
   if flat.length > limit then take flat (limit - 3) ++ "..." else flat
 
-/-- The arguments of a call as one string: the value, when the arguments are a single string
-field — the common shape of a command tool — otherwise the compact JSON, or the raw text when
-it did not parse. -/
+/-- The arguments of a call as one string: the value of the one string field, or of a string
+`command` field beside others — the shapes a command tool takes — otherwise the compact JSON, or
+the raw text when it did not parse. -/
 def argumentsSummary (call : Chat.ToolCall) : String :=
   match call.invalidArguments? with
   | some raw => raw
@@ -681,7 +699,10 @@ def argumentsSummary (call : Chat.ToolCall) : String :=
     | .obj fields =>
       match fields.foldl (fun (acc : Array (String × Lean.Json)) k v => acc.push (k, v)) #[] with
       | #[(_, Lean.Json.str value)] => value
-      | _ => call.arguments.compress
+      | _ =>
+        match call.arguments.getObjVal? "command" with
+        | .ok (Lean.Json.str command) => command
+        | _ => call.arguments.compress
     | other => other.compress
 
 /-- `name  arguments`, flattened to one line. -/
@@ -712,9 +733,7 @@ private def label (state : State) : String :=
     "reply  " ++ flatten text
   | .evaluation =>
     match state.evaluation? with
-    | some e =>
-      let verdict := if e.passed then "pass" else s!"fail {e.returncode}"
-      s!"eval  [{verdict}]  " ++ flatten e.grader
+    | some e => s!"eval  [{e.verdict}]  " ++ flatten e.grader
     | none => "eval"
 
 private def outcomeSuffix (state : State) : String :=
@@ -776,6 +795,7 @@ def showLines (store : Store) (hash : Hash) (view? : Option View := none) :
   if let some e := state.evaluation? then
     lines := lines.push s!"grader   {e.grader}"
     lines := lines.push s!"verdict  {if e.passed then "pass" else "fail"} (rc={e.returncode}, {e.elapsedMs} ms)"
+    if let some (passed, total) := e.score? then lines := lines.push s!"score    {passed}/{total}"
     if let some evidence := e.evidence? then lines := lines.push s!"evidence {evidence.hex}"
     if let some summary := e.summary? then lines := lines.push s!"summary  {summary.compress}"
     lines := lines.push "--- grader output ---"

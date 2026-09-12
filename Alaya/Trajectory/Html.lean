@@ -141,6 +141,7 @@ private def stateJson (store : Store) (view : View) (hidden : Array String) (has
         ("grader", e.grader), ("returncode", (e.returncode : Lean.Json)),
         ("elapsedMs", (e.elapsedMs : Lean.Json)), ("output", e.output),
         ("passed", e.passed), ("summary", e.summary?.getD .null),
+        ("score", e.score?.map (fun (p, t) => Lean.Json.str s!"{p}/{t}") |>.getD .null),
         ("evidence", e.evidence?.map (Lean.Json.str ·.hex) |>.getD .null)]
   -- The context the model is sent from this state, as the view makes it. A state carries only
   -- what its own turn added to the parent's context when the view extended it — the common
@@ -300,7 +301,7 @@ function summary(state) {
   if (state.kind === 'root') return state.note || 'root';
   if (state.kind === 'evaluation') {
     const e = state.evaluation || {};
-    return (e.passed ? 'pass' : 'fail ' + e.returncode) + '  ' + (e.grader || '');
+    return (e.passed ? 'pass' : 'fail ' + e.returncode) + (e.score ? ' ' + e.score : '') + '  ' + (e.grader || '');
   }
   if (state.kind === 'intervention') return state.note || 'commit';
   if (state.kind === 'message') return (state.intervention || {}).message || 'message';
@@ -727,6 +728,7 @@ function renderEvaluation(parent, state) {
   const rows = [['grader', e.grader],
                 ['verdict', (e.passed ? 'pass' : 'fail') + ' (rc ' + e.returncode + ')'],
                 ['elapsed', e.elapsedMs + ' ms']];
+  if (e.score) rows.push(['score', e.score]);
   if (e.evidence) rows.push(['evidence', e.evidence]);
   for (const [k, v] of rows) {
     const row = el('tr');

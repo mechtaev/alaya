@@ -28,51 +28,45 @@ task is to implement its compiler from a written specification.
 ## Running it
 
 Both directories are self-contained uv projects with no runtime dependencies, targeting
-`ghcr.io/astral-sh/uv:alpine3.23`:
+`ghcr.io/astral-sh/uv:python3.12-alpine3.23`:
 
 ```sh
 cd reference && uv run pytest        # 464 tests, all passing
 cd skeleton  && uv run pytest        # 24 tests, all failing, until the work is done
 ```
 
-To grade an attempt, run the reference's suite against the attempt's `src/bija/`:
+## The grader
 
-```sh
-cp -r <attempt>/src/bija reference-check/src/     # reference tests, candidate implementation
-cd reference-check && uv run pytest -q
+`grade.py CHECKOUT OUT` grades an attempt: it replaces the attempt's `tests/` with the
+reference's 232 programs, runs the suite in the benchmark's image, and writes `verdict.json`
+into `OUT` beside the suite's output and its JUnit report. The score counts programs that run
+correctly through the command line (`test_program`); `standalone` counts the same programs
+compiled with `bija build` and run under a bare interpreter; `areas` breaks the score down by
+section of the specification. It needs `docker` and `uv` on the host.
+
+```json
+{"passed": false,
+ "score": {"passed": 155, "total": 232},
+ "standalone": {"passed": 150, "total": 232},
+ "areas": {"attempt": {"passed": 14, "total": 16}, "builtins": {"passed": 22, "total": 22}, ...}}
 ```
 
 ## Driving it with alaya
 
-The skeleton is a project directory, so it seeds a trajectory directly:
+The skeleton is a project directory, so it seeds a trajectory directly; `TASK.txt` is the task
+statement, kept here so every run is given the same one. From the repository root:
 
 ```sh
-root=$(alaya root "$(cat benchmarks/bija/TASK.txt)" benchmarks/bija/skeleton \
+root=$(alaya root "$(cat example/bija/TASK.txt)" example/bija/skeleton --agent mini-swe \
   --image ghcr.io/astral-sh/uv:python3.12-alpine3.23)
 
-alaya resume "$root" --model dgx:gpt-oss-120b
+alaya resume "$root" --agent mini-swe --model dgx:gpt-oss-120b
+
+alaya eval <final-hash> --grader 'example/bija/grade.py {checkout} {out}' --timeout 1800
+# <hash>  fail 1 155/232  (61377 ms)
 ```
 
-`TASK.txt` is the task statement, kept in the repository so every run is given the same one. It
-is worded deliberately: an earlier version asked for "the acceptance suite in tests/ to pass",
-which makes the twelve visible programs the target rather than the specification, and an agent
-that satisfies them has done a twelfth of the work while believing it is finished.
-
-The image carries `uv`, so the agent can run the suite itself between turns; every command it
-runs is snapshotted, so a branch can be taken from any point where it went wrong. To measure
-the result against the full suite rather than the visible twelve, evaluate the final state with
-the reference's tests as the overlay:
-
-```sh
-mkdir -p /tmp/bija-overlay && cp -R benchmarks/bija/reference/tests /tmp/bija-overlay/
-alaya eval <final-hash> --tests /tmp/bija-overlay \
-  --command "uv run pytest -q --tb=no -p no:cacheprovider" --timeout 1800
-```
-
-`--tests` copies the *contents* of the directory over the workspace, so the overlay has to
-contain a `tests/` directory rather than being one. Give `--command` a single command, not a
-pipeline: a shell pipeline reports the exit status of its last stage, so `… | tail -5` would
-record a pass no matter what the tests did.
-
-That is exactly the case `alaya eval` exists for: the hidden tests reach the workspace, the
-verdict is recorded as a leaf, and no state the agent could continue from ever contains them.
+The image carries `uv` and Python, so the agent can run the sample suite itself between turns.
+The agent never sees the reference programs: the grader copies them over a checkout that is
+discarded afterwards, and the verdict is recorded as a leaf. `example/README.md` walks through
+one such run, with a fork and an intervention, both branches graded.

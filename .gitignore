@@ -9,3 +9,6 @@ tmp/
 \#*#
 .#*
 *~
+
+# the unpacked example trajectory (example/trajectory.tar.gz)
+example/trajectory/

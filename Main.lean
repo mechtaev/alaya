@@ -222,9 +222,7 @@ private def dispatch (argv : List String) : Result UInt32 := do
     let timeout ← args.natD "timeout" 900
     let node ← evaluate data.store (data.path / "eval") target grader timeout (args.isSet "force")
     match (← getState data.store node).evaluation? with
-    | some e =>
-      let verdict := if e.passed then "pass" else s!"fail {e.returncode}"
-      emit s!"{node.hex}  {verdict}  ({e.elapsedMs} ms)"
+    | some e => emit s!"{node.hex}  {e.verdict}  ({e.elapsedMs} ms)"
     | none => emit node.hex
     pure 0
   | ["commit", pfx, dir] =>

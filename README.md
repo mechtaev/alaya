@@ -17,7 +17,7 @@ Besides the Lean toolchain named in `lean-toolchain`, `alaya` calls these progra
 | Program | Used for |
 | --- | --- |
 | `curl` | every request to a model provider |
-| `docker` | running an agent's commands, and evaluations, in a pinned container image |
+| `docker` | running an agent's commands in a pinned container image |
 | `/bin/sh`, `uname`, `cp`, `find` | running commands on the host, describing the host, and snapshotting a directory |
 
 `docker` is needed only for trajectories created with `--image`; the rest are on any Unix host.
@@ -46,3 +46,13 @@ specifies the state object, the store layout, the model cache entry, and every `
 mini-SWE-agent as one agent: the original's prompts, `bash` tool, and protocol for reading a
 response and answering a malformed one, realized through the agent API with Lean-native
 rendering, and commands run on the host or in a container.
+
+## Example
+
+[`example/`](example/README.md) is a recorded run of the mini agent on
+[Bija](example/bija/README.md), a small language to be implemented from its specification. The
+run is forked at the point where the agent gave up: one branch is its own submission, the other
+continues after a person fixed the parser by hand and told the agent so. A grader scores both
+against a test suite the agent never saw, and the tree below holds all of it.
+
+![The report of the example trajectory, with the intervention state selected](example/trajectory.png)
