@@ -162,7 +162,7 @@ def suite : Suite := Testing.suite "docker" #[
         assertEqual "image inherited" state.image? (some settings.image)
         -- The container wrote it, the host snapshotted it, the store has it.
         assertEqual "snapshot"
-          ((← assertOk (store.readPath state.env "made.txt")).map (String.fromUTF8? ·))
+          ((← assertOk (store.readPath state.workspace "made.txt")).map (String.fromUTF8? ·))
           (some (some "made-in-container\n"))
       finally
         rt.executor.close,

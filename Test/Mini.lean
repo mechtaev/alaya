@@ -359,9 +359,9 @@ private def cachedRuntime (responses : Array Chat.Response) (config : Config := 
   pure { store, workDir := work, executor, model := cached, agent := agent executor config }
 
 /-- A root for the test task over `project`. -/
-private def mkRoot (rt : Runtime) (project : System.FilePath) (image? : Option String := none)
-    (base? : Option String := none) : TestM Cas.Hash :=
-  assertOk <| createRoot rt.store (initialLog { task := "t" } testUname) project (some "t") image? base?
+private def mkRoot (rt : Runtime) (project : System.FilePath) (image? : Option String := none) :
+    TestM Cas.Hash :=
+  assertOk <| createRoot rt.store (initialLog { task := "t" } testUname) project (some "t") image?
 
 /-- A directory standing in for a hidden test set. -/
 private def testsDir : TestM System.FilePath := do
@@ -370,26 +370,6 @@ private def testsDir : TestM System.FilePath := do
     IO.FS.createDirAll (dir / "tests")
     IO.FS.writeFile (dir / "tests" / "extra.txt") "hidden\n"
   pure dir
-
-/-- A git checkout whose committed `test_x.py` is the one an evaluation must restore. -/
-private def gitProject : TestM System.FilePath := do
-  let dir := (← scratch) / "git-proj"
-  assertOk <| Result.fromIO Error.storage do
-    IO.FS.createDirAll dir
-    IO.FS.writeFile (dir / "test_x.py") "assert 1 == 1\n"
-  let git (args : Array String) : TestM Unit := do
-    let out ← IO.Process.output { cmd := "git", args := #["-C", dir.toString] ++ args }
-    if out.exitCode != 0 then fail s!"git {args}: {out.stderr}"
-  git #["init", "--quiet"]
-  git #["config", "user.email", "t@example.com"]
-  git #["config", "user.name", "t"]
-  git #["add", "."]
-  git #["commit", "--quiet", "-m", "base"]
-  pure dir
-
-private def headCommit (dir : System.FilePath) : TestM String := do
-  let out ← IO.Process.output { cmd := "git", args := #["-C", dir.toString, "rev-parse", "HEAD"] }
-  pure out.stdout.trimAscii.toString
 
 private def emptyProject : TestM System.FilePath := do
   let proj := (← scratch) / "proj"
@@ -434,7 +414,7 @@ def trajectorySuite : Suite := suite "trajectory" #[
     let told ← assertOk <| tell rt.store root "Please re-run your checks."
     let state ← assertOk (getState rt.store told)
     check (state.kind == .message) "a tell is a message state"
-    check (state.env == (← assertOk (getState rt.store root)).env) "a tell keeps the workspace"
+    check (state.workspace == (← assertOk (getState rt.store root)).workspace) "a tell keeps the workspace"
     match (view (← assertOk (logOf rt.store told))).back? with
     | some (.user notice) =>
       check (contains notice "Please re-run your checks.") "the notice carries the message verbatim"
@@ -476,9 +456,9 @@ def trajectorySuite : Suite := suite "trajectory" #[
     let state ← assertOk (getState rt.store stopped)
     check (state.kind == .question) "the run stops at a question"
     assertEqual "question" state.question? (some { callId := "q1", text := "Exact wording or mine?" })
-    check (← assertOk (rt.store.entryAt? state.env "before.txt")).isSome
+    check (← assertOk (rt.store.entryAt? state.workspace "before.txt")).isSome
       "the call before the question ran"
-    check (← assertOk (rt.store.entryAt? state.env "after.txt")).isNone
+    check (← assertOk (rt.store.entryAt? state.workspace "after.txt")).isNone
       "the call after the question did not run"
     check ((← assertOk (waiting rt.store)).size == 1) "the question is open"
     match ← (stepOnce rt "test:model" stopped).toBaseIO with
@@ -533,23 +513,6 @@ def trajectorySuite : Suite := suite "trajectory" #[
         if (eventToJson back).compress != (eventToJson event).compress then
           throw <| IO.userError s!"round-trip mismatch: {(eventToJson back).compress}",
 
-  iotest "a version-1 state loads with its messages lifted to events" do
-    let v1 := Lean.Json.mkObj [
-      ("v", (1 : Lean.Json)), ("parent", .null), ("env", "ab"), ("kind", "agent"),
-      ("appended", .arr #[
-        .mkObj [("role", "assistant"), ("content", "x"), ("tool_calls", .arr #[])],
-        .mkObj [("role", "tool"), ("tool_call_id", "c1"), ("content", "{\"returncode\": 0}")]]),
-      ("commands", .arr #[]), ("outcome", .null), ("note", .null)]
-    match State.fromJson v1 with
-    | .error e => throw <| IO.userError s!"v1 load failed: {e}"
-    | .ok state =>
-      if state.kind != .turn then throw <| IO.userError "a v1 agent state is a turn"
-      match state.appended.toList with
-      | [.message (.assistant (some "x") _ _), .message (.tool "c1" _)] => pure ()
-      | _ => throw <| IO.userError "v1 messages should be lifted to message events"
-      -- The view passes them through, so the old dialogue is what the model still sees.
-      if (view state.appended).size != 2 then throw <| IO.userError "lifted messages are shown as is",
-
   test "the image is recorded at the root and inherited by every child" do
     let rt ← cachedRuntime #[responseWith #[call "c1" "bash" "echo hi"]]
     let pinned := "example.test/img@sha256:0123456789abcdef"
@@ -570,14 +533,14 @@ def trajectorySuite : Suite := suite "trajectory" #[
       responseWith #[call "b" "bash" "echo other > other.txt"]]
     let root ← mkRoot rt (← emptyProject)
     let first ← assertOk <| stepOnce rt "test:model" root
-    check (← assertOk (rt.store.entryAt? (← assertOk (getState rt.store first)).env "junk.txt")).isSome
+    check (← assertOk (rt.store.entryAt? (← assertOk (getState rt.store first)).workspace "junk.txt")).isSome
       "the first branch should have written junk.txt"
     -- Forking checks the root's workspace out again: the first branch's file must be gone.
     let second ← assertOk <| stepOnce rt "test:model" root
     let state ← assertOk (getState rt.store second)
-    check (← assertOk (rt.store.entryAt? state.env "other.txt")).isSome
+    check (← assertOk (rt.store.entryAt? state.workspace "other.txt")).isSome
       "the second branch should have written other.txt"
-    check (← assertOk (rt.store.entryAt? state.env "junk.txt")).isNone
+    check (← assertOk (rt.store.entryAt? state.workspace "junk.txt")).isNone
       "a fork must not start from the abandoned branch's workspace",
 
   test "an evaluation's overlay never reaches a later turn" do
@@ -587,7 +550,7 @@ def trajectorySuite : Suite := suite "trajectory" #[
     -- The hidden tests were overlaid into the work directory; the next turn must not see them.
     let child ← assertOk <| stepOnce rt "test:model" root
     let state ← assertOk (getState rt.store child)
-    check (← assertOk (rt.store.entryAt? state.env "tests/extra.txt")).isNone
+    check (← assertOk (rt.store.entryAt? state.workspace "tests/extra.txt")).isNone
       "an evaluation's tests must never reach a state the agent continues from",
 
   test "an evaluation is a leaf that nothing can be built on" do
@@ -600,10 +563,10 @@ def trajectorySuite : Suite := suite "trajectory" #[
     assertEqual "kind" state.kind Kind.evaluation
     assertEqual "verdict" (state.evaluation?.map (·.passed)) (some true)
     -- The overlay is in the evaluated tree...
-    check (← assertOk (rt.store.entryAt? state.env "tests/extra.txt")).isSome
+    check (← assertOk (rt.store.entryAt? state.workspace "tests/extra.txt")).isSome
       "expected the overlay in the evaluated workspace"
     -- ...and not in the state that was evaluated.
-    check (← assertOk (rt.store.entryAt? (← assertOk (getState rt.store root)).env
+    check (← assertOk (rt.store.entryAt? (← assertOk (getState rt.store root)).workspace
       "tests/extra.txt")).isNone "the agent's state must not gain the tests"
     -- Nothing may continue from it.
     assertError "step" (stepOnce rt "test:model" node) fun
@@ -630,22 +593,29 @@ def trajectorySuite : Suite := suite "trajectory" #[
     check (other != node) "expected a distinct node for a distinct command"
     assertEqual "two children" (← assertOk (children rt.store root)).size 2,
 
-  test "a test patch is applied over the agent's edits, from the base commit" do
-    let rt ← cachedRuntime #[]
-    let project ← gitProject
-    let base ← headCommit project
-    -- The agent weakens the test and edits the code.
-    assertOk <| Result.fromIO Error.storage (IO.FS.writeFile (project / "test_x.py") "assert True\n")
-    let root ← mkRoot rt project none (some base)
-    let patch := "--- a/test_x.py\n+++ b/test_x.py\n@@ -1 +1 @@\n-assert 1 == 1\n+assert 1 == 2\n"
-    let node ← assertOk <| evaluate rt root "cat test_x.py" (.patch patch)
+  test "a test patch is applied to the root's files, over the agent's edits" do
+    let rt ← cachedRuntime #[responseWith #[call "c1" "bash" "echo 'assert True' > test_x.py; echo new > extra.py"]]
+    let project ← emptyProject
+    assertOk <| Result.fromIO Error.storage (IO.FS.writeFile (project / "test_x.py") "assert 1 == 1\n")
+    let root ← mkRoot rt project
+    -- The agent weakens the test and adds a file.
+    let edited ← assertOk <| stepOnce rt "test:model" root
+    let patch := "--- a/test_x.py\n+++ b/test_x.py\n@@ -1 +1,2 @@\n-assert 1 == 1\n+assert 1 == 2\n+assert 2 == 2\n" ++
+      "--- /dev/null\n+++ b/test_new.py\n@@ -0,0 +1 @@\n+assert 3 == 3\n"
+    let node ← assertOk <| evaluate rt edited "cat test_x.py test_new.py extra.py" (.patch patch)
     let state ← assertOk (getState rt.store node)
-    -- The agent's version was reset to the base commit, then the patch applied on top.
-    assertEqual "hidden test wins" (state.evaluation?.map (·.output)) (some "assert 1 == 2\n")
-    assertEqual "patch recorded" (state.evaluation?.bind (·.tests?)).isSome true
-    -- The patch file itself is not part of the evaluated tree.
-    check (← assertOk (rt.store.entryAt? state.env ".alaya-test.patch")).isNone
-      "the patch file must not be snapshotted",
+    -- test_x.py comes from the root, patched — not from the agent's weakened copy; test_new.py is
+    -- created; the agent's other file is untouched.
+    assertEqual "hidden test wins" (state.evaluation?.map (·.output))
+      (some "assert 1 == 2\nassert 2 == 2\nassert 3 == 3\nnew\n")
+    assertEqual "patch recorded" (state.evaluation?.bind (·.tests?)).isSome true,
+
+  iotest "patchPaths reads created, modified, and deleted files" do
+    let diff := "--- a/x.py\n+++ b/x.py\n@@ -1 +1 @@\n-a\n+b\n" ++
+      "--- /dev/null\n+++ b/new.py\n@@ -0,0 +1 @@\n+n\n" ++
+      "--- a/old.py\n+++ /dev/null\n@@ -1 +0,0 @@\n-o\n"
+    if patchPaths diff != #["x.py", "new.py", "old.py"] then
+      throw (IO.userError s!"paths: {patchPaths diff}"),
 
   test "resume drives to submission and records a chain of turns" do
     let rt ← cachedRuntime #[
@@ -665,7 +635,7 @@ def trajectorySuite : Suite := suite "trajectory" #[
     assertEqual "middle parent" mstate.parent? (some root)
     assertEqual "middle events" mstate.appended.size 2
     assertEqual "final events" fstate.appended.size 1
-    check (← assertOk (rt.store.entryAt? fstate.env "a.txt")).isSome "the edit is in the final workspace"
+    check (← assertOk (rt.store.entryAt? fstate.workspace "a.txt")).isSome "the edit is in the final workspace"
     -- The tree shows the calls by name and argument.
     let lines ← assertOk <| treeLines rt.store
     check (lines.any fun line => contains line "bash  echo hi > a.txt") "the tree labels a turn by its call"

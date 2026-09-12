@@ -25,8 +25,7 @@ abbrev Dialogue := Array Chat.Message
 /-- One thing that happened, recorded verbatim. -/
 inductive Event where
   /-- Text placed in the context by something other than the model or a tool: the prompts that
-  open a run, a person's message, or a legacy message whose raw form was never recorded. A view
-  passes it through unchanged. -/
+  open a run, or a person's message. A view passes it through unchanged. -/
   | message (message : Chat.Message)
   /-- The model's turn, whether or not it parsed. Kept whole, so usage, finish reason, and a
   reasoning trace survive, and so a view can decide how a malformed turn is shown. -/
@@ -115,7 +114,7 @@ def pending (log : Log) : Array Chat.ToolCall :=
     response.toolCalls.filter fun call => !observed.contains call.id
 
 /-- Every tool call made, in order — from responses, and from assistant messages placed
-verbatim (a legacy record, or a person writing the model's turn). -/
+verbatim by a person writing the model's turn. -/
 def calls (log : Log) : Array Chat.ToolCall :=
   log.foldl (init := #[]) fun acc event =>
     match event with

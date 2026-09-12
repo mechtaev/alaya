@@ -2,12 +2,12 @@ import Lean.Data.Json
 import Alaya.Error
 
 /-!
-Command-line parsing shared by the `alaya` and `benchmark` executables.
+Command-line parsing for the `alaya` executable.
 
 A command line is a sequence of positionals and `--flag value` pairs, freely interleaved, plus
 optional short aliases (`alaya` maps `-m` to `--note`). Flags are kept as an array of
-occurrences rather than a map, so a flag may be repeated and every value survives — that is what
-lets `benchmark` take several `--model` specs in one run.
+occurrences rather than a map, so a flag may be repeated and every value survives, as `--hide`
+is.
 
 A `--flag` that is last on the line, or followed by another `--flag`, is a *switch*: it is
 recorded with an empty value, so `--concurrent` and `--concurrent 4` are both accepted. The

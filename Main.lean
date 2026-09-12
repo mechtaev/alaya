@@ -119,17 +119,6 @@ private def rootProject (args : Cli.Args) (data : DataDir)
 
 private def modelSpecOf (args : Cli.Args) : String := args.getD "model" ""
 
-/-- The commit a project starts at, for restoring test files before a patch. Taken from
-`--base-commit`, or read from the checkout when it is a git repository. -/
-private def baseCommitOf (args : Cli.Args) (project : System.FilePath) :
-    Result (Option String) := do
-  match args.get? "base-commit" with
-  | some commit => pure (some commit)
-  | none =>
-    let out ← Result.fromIO Error.storage <| IO.Process.output {
-      cmd := "git", args := #["-C", project.toString, "rev-parse", "HEAD"] }
-    pure (if out.exitCode == 0 then some out.stdout.trimAscii.toString else none)
-
 /-- The tests to overlay before a test command runs. `--tests-from-image` is extracted first,
 into a directory beside the workspace, so the overlay is an ordinary directory by the time the
 trajectory applies it. -/
@@ -201,8 +190,7 @@ private def dispatch (argv : List String) : Result UInt32 := do
     let settings? ← (← Executor.Docker.settings? args).mapM (·.pin)
     let (uname, image?) ← rootEnvironment settings?
     let project ← rootProject args data settings? rest.head?
-    let baseCommit? ← baseCommitOf args project
-    let hash ← createRoot data.store (initialLog { task } uname) project (some task) image? baseCommit?
+    let hash ← createRoot data.store (initialLog { task } uname) project (some task) image?
     emit hash.hex
     pure 0
   | "resume" :: pfx :: _ =>
@@ -268,8 +256,8 @@ private def dispatch (argv : List String) : Result UInt32 := do
   | ["checkout", pfx, dir] =>
     let data ← openData args
     let state ← getState data.store (← resolve data.store pfx)
-    data.store.materialize state.env dir { onExisting := .replace }
-    emit s!"checked out {state.env.hex} into {dir}"
+    data.store.materialize state.workspace dir { onExisting := .replace }
+    emit s!"checked out {state.workspace.hex} into {dir}"
     pure 0
   | "html" :: rest =>
     let data ← openData args
@@ -307,7 +295,7 @@ private def dispatch (argv : List String) : Result UInt32 := do
       "html [FILE] [--hide DIR] | " ++
       "show HASH [--view] | diff A B | rm HASH) " ++
       "[--data D] [--json] [--temperature T] [--url U] [--port N] [--echo-reasoning] [--image IMAGE] [--network N] " ++
-      "[--base-commit SHA] [--tests DIR | --test-patch FILE | --tests-from-image PATH] " ++
+      "[--tests DIR | --test-patch FILE | --tests-from-image PATH] " ++
       "[--timeout S] [--force]"
 
 /-- Exit 0 on success, 3 when a run stopped at a question (see `exitWaiting`), 1 on error. -/

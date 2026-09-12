@@ -116,11 +116,11 @@ private def stateJson (store : Store) (view : View) (hidden : Array String) (has
     Result Lean.Json := do
   let state ← getState store hash
   let parentEnv? ← match state.parent? with
-    | some parent => pure (some (← getState store parent).env)
+    | some parent => pure (some (← getState store parent).workspace)
     | none => pure none
   let changes ← match parentEnv? with
     | none => pure #[]
-    | some before => store.diff before state.env
+    | some before => store.diff before state.workspace
   -- Folded prefixes are counted, never listed: a run that rebuilds a virtual environment
   -- changes hundreds of paths that say nothing, and they would otherwise crowd out the ones
   -- that do — the listing limit applies to what is left after folding.
@@ -142,7 +142,7 @@ private def stateJson (store : Store) (view : View) (hidden : Array String) (has
         ("removed", (fold.removed : Lean.Json)), ("modified", (fold.modified : Lean.Json)),
         ("total", (fold.total : Lean.Json))]
   let shown := listed.extract 0 changeLimit
-  let changesJson ← shown.mapM (changeJson store parentEnv? (some state.env))
+  let changesJson ← shown.mapM (changeJson store parentEnv? (some state.workspace))
   let evaluation := match state.evaluation? with
     | none => Lean.Json.null
     | some e => .mkObj [
@@ -164,10 +164,9 @@ private def stateJson (store : Store) (view : View) (hidden : Array String) (has
     ("hash", hash.hex),
     ("parent", state.parent?.map (Lean.Json.str ·.hex) |>.getD .null),
     ("kind", state.kind.toString),
-    ("env", state.env.hex),
+    ("workspace", state.workspace.hex),
     ("note", state.note?.map Lean.Json.str |>.getD .null),
     ("image", state.image?.map Lean.Json.str |>.getD .null),
-    ("base", state.baseCommit?.map Lean.Json.str |>.getD .null),
     ("outcome", match state.outcome? with
       | none => .null
       | some o => .mkObj [("status", o.status), ("submission", o.submission)]),
@@ -882,10 +881,9 @@ function select(hash) {
   }
   detail.append(headbar);
   const meta = el('table', 'meta');
-  const rows = [['hash', hash], ['parent', state.parent || '(root)'], ['workspace', state.env]];
+  const rows = [['hash', hash], ['parent', state.parent || '(root)'], ['workspace', state.workspace]];
   if (state.note) rows.push(['note', state.note]);
   if (state.image) rows.push(['image', state.image]);
-  if (state.base) rows.push(['base commit', state.base]);
   if (state.outcome) rows.push(['outcome', state.outcome.status]);
   if (state.question) rows.push(['question', state.question.text]);
   if (state.intervention) rows.push(['message', state.intervention.message]);

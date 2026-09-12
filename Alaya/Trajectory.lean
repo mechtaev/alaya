@@ -25,7 +25,7 @@ The trajectory knows nothing about what an agent's tools are or what its observa
 stores events as the agent produced them and shows the model whatever the agent's `view` makes of
 them; every rendering here is generic.
 
-Liveness is tracked with the store's refs (`state.<hex>` for each node, `env.<hex>` for each
+Liveness is tracked with the store's refs (`state.<hex>` for each node, `workspace.<hex>` for each
 workspace it points at); `rm` prunes a subtree by rewriting those refs and running `Store.gc`.
 -/
 
@@ -163,12 +163,9 @@ def Kind.toString : Kind -> String
   | .question => "question"
   | .reply => "reply"
 
-/-- Reads a kind, accepting the names of schema version 1, whose `agent` and `format_error`
-turns are both turns here: a format error is a fact about how the agent read the response, not
-about the state. -/
 def Kind.ofString? : String -> Option Kind
   | "root" => some .root
-  | "turn" | "agent" | "format_error" => some .turn
+  | "turn" => some .turn
   | "intervention" => some .intervention
   | "evaluation" => some .evaluation
   | "message" => some .message
@@ -221,11 +218,11 @@ structure Evaluation where
 def Evaluation.passed (evaluation : Evaluation) : Bool := evaluation.returncode == 0
 
 /-- A node of the trajectory tree, content-addressed in the store. `appended` are the events
-this state adds to its parent's log (the full log is the concatenation from the root); `env` is
+this state adds to its parent's log (the full log is the concatenation from the root); `workspace` is
 the workspace snapshot after this state's turn. -/
 structure State where
   parent? : Option Hash
-  env : Hash
+  workspace : Hash
   kind : Kind
   /-- Events appended on the edge from the parent to this state. -/
   appended : Log
@@ -235,10 +232,6 @@ structure State where
   note? : Option String := none
   /-- The verdict, on an `evaluation` state. -/
   evaluation? : Option Evaluation := none
-  /-- The commit the project started at, inherited from the root, when it was a git checkout.
-  Evaluation restores the files a test patch touches to this commit first, so an agent that
-  edited the tests cannot decide its own verdict. -/
-  baseCommit? : Option String := none
   /-- The pinned container image the commands of this trajectory run in, inherited from the
   parent, or `none` when it runs on the host. Recorded so a continuation runs the same bits the
   earlier turns did — and so a prompt that describes the machine stays true. -/
@@ -285,48 +278,42 @@ private def outcomeFromJson (json : Lean.Json) : Except String Outcome := do
   let submission ← json.getObjVal? "submission" >>= Lean.Json.getStr?
   pure { status, submission }
 
-/-- The current schema version. Version 1 stored rendered messages in `appended`; version 2
-stores events. -/
-def schemaVersion : Nat := 2
+/-- The schema version written in every state object, so a reader can refuse what it does not
+understand. -/
+def schemaVersion : Nat := 1
 
 def toJson (state : State) : Lean.Json :=
   .mkObj [
     ("v", (schemaVersion : Lean.Json)),
     ("parent", state.parent?.map (Lean.Json.str ·.hex) |>.getD .null),
-    ("env", state.env.hex),
+    ("workspace", state.workspace.hex),
     ("kind", state.kind.toString),
     ("appended", .arr (state.appended.map eventToJson)),
     ("outcome", state.outcome?.map outcomeToJson |>.getD .null),
     ("note", state.note?.map Lean.Json.str |>.getD .null),
     ("image", state.image?.map Lean.Json.str |>.getD .null),
-    ("base_commit", state.baseCommit?.map Lean.Json.str |>.getD .null),
     ("evaluation", state.evaluation?.map evaluationToJson |>.getD .null),
     ("intervention", state.intervention?.map (fun i => .mkObj [
       ("message", i.message), ("changed", .arr (i.changed.map Lean.Json.str))]) |>.getD .null),
     ("question", state.question?.map (fun q => .mkObj [
       ("call_id", q.callId), ("text", q.text)]) |>.getD .null)]
 
-/-- Reads a state of any schema version. A version-1 `appended` holds rendered messages, whose
-raw events were never recorded; each is lifted to `Event.message`, which a view passes through
-unchanged, so an old forest stays readable and can still grow. -/
 def fromJson (json : Lean.Json) : Except String State := do
-  let version := (json.getObjVal? "v" >>= Lean.Json.getNat?).toOption.getD 1
+  let version ← json.getObjVal? "v" >>= Lean.Json.getNat?
+  if version != schemaVersion then
+    throw s!"state object has schema version {version}; this build reads version {schemaVersion}"
   let parent? := (json.getObjVal? "parent" >>= Lean.Json.getStr?).toOption.map (⟨·⟩)
-  let env : Hash := ⟨← json.getObjVal? "env" >>= Lean.Json.getStr?⟩
+  let workspace : Hash := ⟨← json.getObjVal? "workspace" >>= Lean.Json.getStr?⟩
   let kind ← match Kind.ofString? (← json.getObjVal? "kind" >>= Lean.Json.getStr?) with
     | some kind => pure kind
     | none => throw "unknown state kind"
-  let items ← json.getObjVal? "appended" >>= Lean.Json.getArr?
-  let appended ← if version == 1
-    then items.mapM fun item => Event.message <$> messageFromJson item
-    else items.mapM eventFromJson
+  let appended ← (← json.getObjVal? "appended" >>= Lean.Json.getArr?).mapM eventFromJson
   let outcome? ← match json.getObjVal? "outcome" with
     | .ok .null => pure none
     | .ok o => some <$> outcomeFromJson o
     | .error _ => pure none
   let note? := (json.getObjVal? "note" >>= Lean.Json.getStr?).toOption
   let image? := (json.getObjVal? "image" >>= Lean.Json.getStr?).toOption
-  let baseCommit? := (json.getObjVal? "base_commit" >>= Lean.Json.getStr?).toOption
   let evaluation? ← match json.getObjVal? "evaluation" with
     | .ok .null => pure none
     | .ok e => some <$> evaluationFromJson e
@@ -345,7 +332,7 @@ def fromJson (json : Lean.Json) : Except String State := do
       let text ← q.getObjVal? "text" >>= Lean.Json.getStr?
       pure (some ({ callId, text } : Question))
     | _ => pure none
-  pure { parent?, env, kind, appended, outcome?, note?, image?, baseCommit?, evaluation?
+  pure { parent?, workspace, kind, appended, outcome?, note?, image?, evaluation?
          intervention?, question? }
 
 end State
@@ -354,16 +341,16 @@ end State
 
 Each state is a store blob addressed by its own content; two refs record liveness so `Store.gc`
 preserves exactly the reachable nodes and workspaces: `state.<hex>` pins the node blob and
-`env.<hex>` pins its workspace tree. -/
+`workspace.<hex>` pins its workspace tree. -/
 
 private def stateRef (h : Hash) : String := "state." ++ h.hex
-private def envRef (h : Hash) : String := "env." ++ h.hex
+private def workspaceRef (h : Hash) : String := "workspace." ++ h.hex
 
 /-- Persists a state, returning its content hash, and pins its liveness refs. -/
 def putState (store : Store) (state : State) : Result Hash := do
   let hash ← store.putBytes state.toJson.compress.toUTF8
   store.setRef (stateRef hash) hash
-  store.setRef (envRef state.env) state.env
+  store.setRef (workspaceRef state.workspace) state.workspace
   pure hash
 
 /-- Loads the state at `hash`. -/
@@ -407,6 +394,12 @@ partial def logOf (store : Store) (hash : Hash) : Result Log := do
     | none => pure #[]
   pure (ancestors ++ state.appended)
 
+/-- The root of the tree `state` belongs to: the project as it was given. -/
+partial def rootOf (store : Store) (state : State) : Result State :=
+  match state.parent? with
+  | none => pure state
+  | some parent => do rootOf store (← getState store parent)
+
 /-- The transitive subtree rooted at `hash` (inclusive). -/
 partial def subtree (store : Store) (hash : Hash) : Result (Array Hash) := do
   let kids ← children store hash
@@ -419,17 +412,17 @@ partial def subtree (store : Store) (hash : Hash) : Result (Array Hash) := do
 surviving state or its workspace. -/
 def removeSubtree (store : Store) (hash : Hash) : Result Nat := do
   let doomed ← subtree store hash
-  -- Drop the doomed states' refs; then re-pin env refs from the survivors only, so a workspace
+  -- Drop the doomed states' refs; then re-pin workspace refs from the survivors only, so a workspace
   -- shared with a survivor stays live while one used only by the subtree is freed.
   for h in doomed do
     store.deleteRef (stateRef h)
   let refs ← store.listRefs
   for (name, _) in refs do
-    if name.startsWith "env." then store.deleteRef name
+    if name.startsWith "workspace." then store.deleteRef name
   let survivors := (← allStates store)
   for s in survivors do
     let state ← getState store s
-    store.setRef (envRef state.env) state.env
+    store.setRef (workspaceRef state.workspace) state.workspace
   let _ ← store.gc
   pure doomed.size
 
@@ -477,28 +470,28 @@ inductive Halt where
 /-- Follows the agent's directives after a sample until it wants to sample again or stops,
 recording each observation and snapshotting the workspace after each act. Returns the events
 appended, the final workspace, and why it stopped. -/
-private partial def follow (rt : Runtime) (log : Log) (appended : Log) (env : Hash) :
+private partial def follow (rt : Runtime) (log : Log) (appended : Log) (workspace : Hash) :
     Result (Log × Hash × Option Question × Halt) := do
   match rt.agent.next log with
-  | .sample => pure (appended, env, none, .continue)
-  | .done outcome => pure (appended, env, none, .outcome outcome)
+  | .sample => pure (appended, workspace, none, .continue)
+  | .done outcome => pure (appended, workspace, none, .outcome outcome)
   | .ask callId text =>
     let question : Question := { callId, text }
-    pure (appended, env, some question, .question question)
+    pure (appended, workspace, some question, .question question)
   | .act call =>
     let content ← rt.agent.act { dir := rt.workDir } call
-    let env ← rt.store.snapshot rt.workDir
+    let workspace ← rt.store.snapshot rt.workDir
     let event := Event.observation call.id content
-    follow rt (log.push event) (appended.push event) env
+    follow rt (log.push event) (appended.push event) workspace
 
-/-- Runs one model turn from `parent` (whose log is `log` and workspace is `env`, already
+/-- Runs one model turn from `parent` (whose log is `log` and workspace is `workspace`, already
 materialized into `rt.workDir`), records the turn as a new child state, and returns the child,
 its log, its workspace, and why the turn stopped, if it did.
 
 Sampling asks for draw index `= turn children of parent`, replaying recorded branches and
 appending exactly one new draw — so a new continuation is always a fresh sibling, and an
 interrupted run resumes deterministically from its cache. -/
-def advance (rt : Runtime) (note : String) (parent : Hash) (log : Log) (env : Hash) :
+def advance (rt : Runtime) (note : String) (parent : Hash) (log : Log) (workspace : Hash) :
     Result (Hash × Log × Hash × Halt) := do
   -- Only children that came from sampling consume a draw: an evaluation, an intervention, a
   -- message, or a reply is recorded against a state without asking the model anything, and
@@ -507,40 +500,38 @@ def advance (rt : Runtime) (note : String) (parent : Hash) (log : Log) (env : Ha
   for child in ← children rt.store parent do
     let kind := (← getState rt.store child).kind
     if kind == .turn || kind == .question then childCount := childCount + 1
-  -- Children run in whatever the parent ran in; the image and base commit are properties of
-  -- the trajectory.
-  let parentState ← getState rt.store parent
-  let (image?, baseCommit?) := (parentState.image?, parentState.baseCommit?)
+  -- Children run in whatever the parent ran in; the image is a property of the trajectory.
+  let image? := (← getState rt.store parent).image?
   let stream ← rt.model.sample { messages := rt.agent.view log, tools := rt.agent.tools }
   let responses ← stream.nextN (childCount + 1)
   let response ← match responses[childCount]? with
     | some response => pure response
     | none => throw <| .protocol "model returned too few responses"
   let event := Event.response response
-  let (appended, env, question?, halt) ← follow rt (log.push event) #[event] env
+  let (appended, workspace, question?, halt) ← follow rt (log.push event) #[event] workspace
   let outcome? := match halt with | .outcome o => some o | _ => none
   let child ← putState rt.store {
-    parent? := some parent, env, appended, outcome?, question?
+    parent? := some parent, workspace, appended, outcome?, question?
     kind := if question?.isSome then .question else .turn
-    note? := some note, image?, baseCommit? }
-  pure (child, log ++ appended, env, halt)
+    note? := some note, image? }
+  pure (child, log ++ appended, workspace, halt)
 
-/-- Materializes `env` into `rt.workDir`, replacing whatever is there.
+/-- Materializes `workspace` into `rt.workDir`, replacing whatever is there.
 
 The work directory is modified after every checkout — by the commands of the run, and by the
 overlay an evaluation applies — so `MaterializeConfig.verify`, on by default, is what keeps this
 sound: without re-capturing the directory first, an incremental materialize would trust a stale
 record and leave everything those writes added, so a fork would start from the abandoned
 branch's files and a turn after an evaluation would start from the hidden tests. -/
-private def checkoutInto (rt : Runtime) (env : Hash) : Result Unit :=
-  rt.store.materialize env rt.workDir { onExisting := .replace }
+private def checkoutInto (rt : Runtime) (workspace : Hash) : Result Unit :=
+  rt.store.materialize workspace rt.workDir { onExisting := .replace }
 
 /-- Advances exactly one model turn from `hash`, returning the new child state. -/
 def stepOnce (rt : Runtime) (note : String) (hash : Hash) : Result Hash := do
   let state ← getState rt.store hash
   Result.fromExcept Error.configuration state.continuable
-  checkoutInto rt state.env
-  let (child, _, _, _) ← advance rt note hash (← logOf rt.store hash) state.env
+  checkoutInto rt state.workspace
+  let (child, _, _, _) ← advance rt note hash (← logOf rt.store hash) state.workspace
   pure child
 
 /-- Grows a continuation from `hash` until the run ends or stops at a question, returning the
@@ -549,14 +540,14 @@ partial def resume (rt : Runtime) (note : String) (hash : Hash)
     (onStep : Hash -> Result Unit) : Result Hash := do
   let start ← getState rt.store hash
   Result.fromExcept Error.configuration start.continuable
-  checkoutInto rt start.env
-  let rec go (parent : Hash) (log : Log) (env : Hash) : Result Hash := do
-    let (child, log, env, halt) ← advance rt note parent log env
+  checkoutInto rt start.workspace
+  let rec go (parent : Hash) (log : Log) (workspace : Hash) : Result Hash := do
+    let (child, log, workspace, halt) ← advance rt note parent log workspace
     onStep child
     match halt with
-    | .continue => go child log env
+    | .continue => go child log workspace
     | _ => pure child
-  go hash (← logOf rt.store hash) start.env
+  go hash (← logOf rt.store hash) start.workspace
 
 /-! ## Evaluation
 
@@ -572,25 +563,30 @@ inductive Overlay where
   | nothing
   /-- A host directory whose contents are copied over the workspace. -/
   | directory (path : System.FilePath)
-  /-- A unified diff. The files it touches are first restored to the trajectory's base commit
-  (or deleted, when they did not exist there), so it applies to pristine content. -/
+  /-- A unified diff against the project as it was at the root. The files it touches are
+  taken from the root snapshot, not from the agent's workspace, so it applies to pristine
+  content and an edit the agent made to a test cannot survive. -/
   | patch (contents : String)
 
-/-- The paths a unified diff touches, read from its `+++` lines. -/
+/-- The paths a unified diff touches: the `+++` side, or the `---` side of a deletion, without
+git's `a/`/`b/` prefixes. -/
 def patchPaths (patch : String) : Array String := Id.run do
+  let strip (line : String) : Option String :=
+    let target := (((line.drop 4).toString.splitOn "\t").headD "").trimAscii.toString
+    if target == "/dev/null" || target.isEmpty then none
+    else if target.startsWith "a/" || target.startsWith "b/" then some (target.drop 2).toString
+    else some target
+  let lines := (patch.splitOn "\n").toArray
   let mut paths := #[]
-  for line in patch.splitOn "\n" do
+  for i in [0:lines.size] do
+    let line := lines[i]!
     if line.startsWith "+++ " then
-      let target := ((line.drop 4).toString.splitOn "\t").headD ""
-      let target := target.trimAscii.toString
-      let target := if target.startsWith "b/" then (target.drop 2).toString else target
-      if target != "/dev/null" && !target.isEmpty && !paths.contains target then
-        paths := paths.push target
+      -- A deletion names /dev/null here; the path is then on the `---` line before it.
+      let path? := (strip line).orElse fun _ =>
+        if i > 0 && lines[i-1]!.startsWith "--- " then strip lines[i-1]! else none
+      if let some path := path? then
+        if !paths.contains path then paths := paths.push path
   paths
-
-/-- Single-quotes a path for `/bin/sh`. -/
-private def shellQuote (s : String) : String :=
-  "'" ++ s.replace "'" "'\\''" ++ "'"
 
 /-- The overlay's content address, so an evaluation records exactly what was applied and the
 same test set shared by many trajectories is stored once. -/
@@ -598,10 +594,6 @@ private def overlayHash (store : Store) : Overlay -> Result (Option Hash)
   | .nothing => pure none
   | .directory path => some <$> store.snapshot path
   | .patch contents => some <$> store.putBytes contents.toUTF8
-
-/-- The name the patch is written under inside the workspace; removed before the snapshot, so it
-never becomes part of the evaluated tree. -/
-private def patchFile : String := ".alaya-test.patch"
 
 /-- Runs a shell command in the work directory through the runtime's executor. -/
 private def execBash (rt : Runtime) (command : String) : Result Output :=
@@ -618,19 +610,35 @@ private def applyOverlay (rt : Runtime) (state : State) : Overlay -> Result Unit
   | .patch contents => do
     let paths := patchPaths contents
     if paths.isEmpty then throw <| .configuration "the test patch touches no files"
-    -- Restore what the patch touches to the base commit, so the agent's edits to the tests
-    -- cannot survive; a path that did not exist at the base commit is removed instead.
-    if let some base := state.baseCommit? then
-      let quoted := " ".intercalate (paths.map shellQuote).toList
-      let reset ← execBash rt
-        s!"for p in {quoted}; do git checkout {base} -- \"$p\" 2>/dev/null || rm -f \"$p\"; done"
-      if reset.returncode != 0 then
-        throw <| .configuration s!"restoring test files to {base} failed: {reset.output}"
-    Result.fromIO Error.storage (IO.FS.writeFile (rt.workDir / patchFile) contents)
-    let applied ← execBash rt s!"git apply -v {patchFile}"
-    Result.fromIO Error.storage (IO.FS.removeFile (rt.workDir / patchFile))
-    if applied.returncode != 0 then
-      throw <| .configuration s!"applying the test patch failed: {applied.output}"
+    -- Each file the patch touches is first restored from the root snapshot — the project as
+    -- given — so the agent's version of it cannot survive; a path the root does not have is
+    -- removed, since the patch creates it.
+    let root ← rootOf rt.store state
+    for path in paths do
+      if !Cas.safeRelativePath path then throw <| .configuration s!"the test patch names an unsafe path: {path}"
+      let target := rt.workDir / path
+      match ← rt.store.readPath root.workspace path with
+      | some bytes => Result.fromIO Error.storage do
+          if let some parent := target.parent then IO.FS.createDirAll parent
+          IO.FS.writeBinFile target bytes
+      | none => Result.fromIO Error.storage do
+          if ← target.pathExists then IO.FS.removeFile target
+    -- Then the diff is applied on the host with `patch(1)`, which every host has; the container,
+    -- if any, sees the result through the bind mount.
+    let applied ← Result.fromIO Error.storage do
+      let child ← IO.Process.spawn {
+        cmd := "patch", args := #["-p1", "--batch", "--no-backup-if-mismatch"]
+        cwd := some rt.workDir, stdin := .piped, stdout := .piped, stderr := .piped }
+      let (stdin, child) ← child.takeStdin
+      stdin.putStr contents
+      stdin.flush
+      let _ := stdin   -- dropping the handle closes the pipe
+      let out ← child.stdout.readToEnd
+      let err ← child.stderr.readToEnd
+      let code ← child.wait
+      pure (code, out ++ err)
+    if applied.1 != 0 then
+      throw <| .configuration s!"applying the test patch failed: {applied.2}"
 
 /-- Keeps a test run readable in `show` without putting megabytes in a state blob. -/
 private def truncateOutput (s : String) : String :=
@@ -663,15 +671,15 @@ def evaluate (rt : Runtime) (hash : Hash) (command : String) (overlay : Overlay)
   let tests? ← overlayHash rt.store overlay
   if !force then
     if let some existing ← evaluationOf? rt.store hash command tests? then return existing
-  checkoutInto rt state.env
+  checkoutInto rt state.workspace
   applyOverlay rt state overlay
   let started ← Result.fromIO Error.storage IO.monoMsNow
   let output ← execBash rt command
   let elapsedMs := (← Result.fromIO Error.storage IO.monoMsNow) - started
-  let env ← rt.store.snapshot rt.workDir
+  let workspace ← rt.store.snapshot rt.workDir
   putState rt.store {
-    parent? := some hash, env, kind := .evaluation, appended := #[]
-    image? := state.image?, baseCommit? := state.baseCommit?
+    parent? := some hash, workspace, kind := .evaluation, appended := #[]
+    image? := state.image?
     evaluation? := some {
       command, returncode := output.returncode, elapsedMs
       output := truncateOutput (output.output ++
@@ -683,10 +691,9 @@ def evaluate (rt : Runtime) (hash : Hash) (command : String) (overlay : Overlay)
 /-- Creates a root state from the initial project directory: the agent's opening log — its
 prompts — and a snapshot of `project`. -/
 def createRoot (store : Store) (log : Log) (project : System.FilePath)
-    (note? : Option String := none) (image? : Option String := none)
-    (baseCommit? : Option String := none) : Result Hash := do
-  let env ← store.snapshot project
-  putState store { parent? := none, env, kind := .root, appended := log, note?, image?, baseCommit? }
+    (note? : Option String := none) (image? : Option String := none) : Result Hash := do
+  let workspace ← store.snapshot project
+  putState store { parent? := none, workspace, kind := .root, appended := log, note?, image? }
 
 /-- A state a person may build on: anything but an evaluation, whose workspace holds tests the
 agent never saw, or a state waiting for an answer, which `reply` alone grows. An ended run is
@@ -715,16 +722,16 @@ def commit (store : Store) (hash : Hash) (dir : System.FilePath) (note? : Option
     (tell? : Option String := none) : Result Hash := do
   let parent ← getState store hash
   buildable parent
-  let env ← store.snapshot dir
+  let workspace ← store.snapshot dir
   let intervention? ← match tell? with
     | none => pure none
     | some message =>
-      pure (some ({ message, changed := ← changedLines store parent.env env } : Intervention))
+      pure (some ({ message, changed := ← changedLines store parent.workspace workspace } : Intervention))
   putState store {
-    parent? := some hash, env, kind := .intervention, note?
+    parent? := some hash, workspace, kind := .intervention, note?
     appended := intervention?.map (fun i => #[Event.message (.user (interventionNotice i))])
       |>.getD #[]
-    intervention?, image? := parent.image?, baseCommit? := parent.baseCommit? }
+    intervention?, image? := parent.image? }
 
 /-- Records a person's message to the agent as a child of `hash`: same workspace, and the log
 grown by one user turn carrying the message in the intervention envelope. -/
@@ -733,10 +740,10 @@ def tell (store : Store) (hash : Hash) (message : String) : Result Hash := do
   buildable parent
   let intervention : Intervention := { message }
   putState store {
-    parent? := some hash, env := parent.env, kind := .message
+    parent? := some hash, workspace := parent.workspace, kind := .message
     appended := #[.message (.user (interventionNotice intervention))]
     intervention? := some intervention
-    image? := parent.image?, baseCommit? := parent.baseCommit? }
+    image? := parent.image? }
 
 /-- Answers the question `hash` is waiting on: a child with the same workspace whose one appended
 event is the observation of the asking call, carrying `text` verbatim. Answering the same
@@ -747,9 +754,9 @@ def reply (store : Store) (hash : Hash) (text : String) : Result Hash := do
     | some q => pure q
     | none => throw <| .configuration "this state is not waiting for an answer"
   putState store {
-    parent? := some hash, env := parent.env, kind := .reply
+    parent? := some hash, workspace := parent.workspace, kind := .reply
     appended := #[.observation question.callId (.str text)]
-    image? := parent.image?, baseCommit? := parent.baseCommit? }
+    image? := parent.image? }
 
 /-- Every question in the forest that has not been answered: waiting states without a `reply`
 child. -/
@@ -877,10 +884,9 @@ def showLines (store : Store) (hash : Hash) (view? : Option View := none) :
     s!"state    {hash.hex}",
     s!"kind     {state.kind.toString}",
     s!"parent   {state.parent?.map (·.hex) |>.getD "(root)"}",
-    s!"env      {state.env.hex}"]
+    s!"workspace {state.workspace.hex}"]
   if let some note := state.note? then lines := lines.push s!"note     {note}"
   if let some image := state.image? then lines := lines.push s!"image    {image}"
-  if let some base := state.baseCommit? then lines := lines.push s!"base     {base}"
   if let some e := state.evaluation? then
     lines := lines.push s!"command  {e.command}"
     lines := lines.push s!"verdict  {if e.passed then "pass" else "fail"} (rc={e.returncode}, {e.elapsedMs} ms)"
@@ -905,6 +911,6 @@ def showLines (store : Store) (hash : Hash) (view? : Option View := none) :
 def diffLines (store : Store) (a b : Hash) : Result (Array String) := do
   let sa ← getState store a
   let sb ← getState store b
-  changedLines store sa.env sb.env
+  changedLines store sa.workspace sb.workspace
 
 end Alaya.Trajectory
