@@ -65,7 +65,7 @@ structure MaterializeConfig where
   unless it still matches its record exactly.
 
   On by default because the record goes stale the moment anything else writes to the
-  destination — an agent's own commands, a test overlay, a `rm -rf` and a fresh checkout of a
+  destination — an agent's own commands, a `rm -rf` and a fresh checkout of a
   different state — and an incremental apply against a stale record silently leaves a
   destination that is not the snapshot it claims to be. Turn it off only where the destination
   is known to be untouched since the last materialize. -/

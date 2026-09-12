@@ -18,10 +18,10 @@ Besides the Lean toolchain named in `lean-toolchain`, `alaya` calls these progra
 | --- | --- |
 | `curl` | every request to a model provider |
 | `docker` | running an agent's commands, and evaluations, in a pinned container image |
-| `patch` | applying a test patch to a workspace before an evaluation |
 | `/bin/sh`, `uname`, `cp`, `find` | running commands on the host, describing the host, and snapshotting a directory |
 
 `docker` is needed only for trajectories created with `--image`; the rest are on any Unix host.
+A grader given to `alaya eval` is a shell command of your own and brings its own dependencies.
 
 ## Documentation
 

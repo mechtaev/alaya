@@ -7,7 +7,6 @@ open Alaya
 open Alaya.Cas (Store Hash)
 open Alaya.Agent (Outcome)
 open Alaya.Trajectory
-open Alaya.Agent.MiniSwe (Config initialLog)
 
 private def emit (s : String) : Result Unit := Result.fromIO Error.storage (IO.println s)
 
@@ -65,19 +64,48 @@ private def executorFor (args : Cli.Args) (image? : Option String) (config : Exe
           "a continuation has to run the same bits its earlier turns did"
     Executor.Docker.executor settings config
 
-/-- The mini agent over an executor, with the given command timeout. -/
-private def miniAgent (executor : Executor) (config : Config) : Agent.Agent :=
-  Agent.MiniSwe.agent executor config
+/-- An agent the command line can name with `--agent`: how to open its run, how to build it over
+an executor, and how it shows a log. There will be more of these; the trajectory is the same for
+all of them. -/
+private structure AgentSpec where
+  name : String
+  /-- The opening log of a run for a task, on a machine described by `uname`. -/
+  initialLog : String -> Uname -> Agent.Log
+  /-- How the agent's shell commands are run. -/
+  executorConfig : Executor.Config
+  /-- The agent over an executor. -/
+  build : Executor -> Agent.Agent
+  view : Agent.View
+  tools : Array Chat.ToolDefinition
+
+private def miniSwe : AgentSpec :=
+  let config : Agent.MiniSwe.Config := { task := "" }
+  { name := "mini-swe"
+    initialLog := fun task uname => Agent.MiniSwe.initialLog { config with task } uname
+    executorConfig := config.executor
+    build := fun executor => Agent.MiniSwe.agent executor config
+    view := Agent.MiniSwe.view
+    tools := Agent.MiniSwe.tools }
+
+private def agents : Array AgentSpec := #[miniSwe]
+
+/-- The agent named by `--agent`. Required wherever an agent's prompts, tools, or view matter:
+`root`, `resume`, `step`, `html`, and `show --view`. -/
+private def agentOf (args : Cli.Args) : Result AgentSpec := do
+  let known := ", ".intercalate (agents.map (·.name)).toList
+  let name ← args.require "agent" s!"one of {known}"
+  match agents.find? (·.name == name) with
+  | some spec => pure spec
+  | none => throw <| .configuration s!"unknown agent: {name} (use {known})"
 
 private def runtimeFor (data : DataDir) (work : WorkDir) (args : Cli.Args)
     (image? : Option String) : Result Runtime := do
-  let spec ← args.require "model" "e.g. --model yunwu:gpt-5.6-luna"
+  let spec ← agentOf args
+  let modelSpec ← args.require "model" "e.g. --model yunwu:gpt-5.6-luna"
   let temperature ← args.floatD "temperature" 0.0
-  let model ← buildModel spec temperature data.cache (← Provider.Options.ofArgs args)
-  let config : Config := { task := "" }
-  let executor ← executorFor args image? config.executor
-  pure { store := data.store, workDir := work.path, executor, model
-         agent := miniAgent executor config }
+  let model ← buildModel modelSpec temperature data.cache (← Provider.Options.ofArgs args)
+  let executor ← executorFor args image? spec.executorConfig
+  pure { store := data.store, workDir := work.path, executor, model, agent := spec.build executor }
 
 /-- The `uname` a new trajectory's prompt is built from, and the image it is pinned to: read
 from the image when there is one, from the host otherwise. -/
@@ -119,41 +147,6 @@ private def rootProject (args : Cli.Args) (data : DataDir)
 
 private def modelSpecOf (args : Cli.Args) : String := args.getD "model" ""
 
-/-- The tests to overlay before a test command runs. `--tests-from-image` is extracted first,
-into a directory beside the workspace, so the overlay is an ordinary directory by the time the
-trajectory applies it. -/
-private def overlayOf (args : Cli.Args) (data : DataDir) (image? : Option String) :
-    Result Overlay := do
-  match args.get? "tests", args.get? "test-patch", args.get? "tests-from-image" with
-  | none, none, none => pure .nothing
-  | some directory, none, none => pure (.directory directory)
-  | none, some file, none =>
-    pure (.patch (← Result.fromIO Error.storage (IO.FS.readFile file)))
-  | none, none, some path =>
-    match image? with
-    | none => throw <| .configuration "--tests-from-image needs a trajectory pinned to an image"
-    | some pinned =>
-      let extracted := data.path / "tests"
-      Result.fromIO Error.storage do
-        IO.FS.removeDirAll extracted
-        IO.FS.createDirAll extracted
-      Executor.Docker.copyOut (← Executor.Docker.settingsFor args pinned) path extracted
-      pure (.directory extracted)
-  | _, _, _ =>
-    throw <| .configuration "give at most one of --tests, --test-patch, --tests-from-image"
-
-/-- A runtime for running tests: no model is needed, and the timeout is a test suite's rather
-than a single agent command's. -/
-private def evalRuntime (data : DataDir) (work : WorkDir) (args : Cli.Args)
-    (image? : Option String) : Result Runtime := do
-  let config : Config := { task := "", timeoutSeconds := ← args.natD "timeout" 900 }
-  let executor ← executorFor args image? config.executor
-  pure {
-    store := data.store, workDir := work.path, executor
-    model := { identity := .mkObj [("model", "none")]
-               sample := fun _ => throw (.configuration "evaluation does not call a model") }
-    agent := miniAgent executor config }
-
 /-- Exit status when a run stopped at a question rather than an outcome, so a supervisor driving
 `alaya` as a subprocess can tell the two apart without parsing anything. -/
 private def exitWaiting : UInt32 := 3
@@ -189,8 +182,9 @@ private def dispatch (argv : List String) : Result UInt32 := do
     let data ← openData args
     let settings? ← (← Executor.Docker.settings? args).mapM (·.pin)
     let (uname, image?) ← rootEnvironment settings?
+    let spec ← agentOf args
     let project ← rootProject args data settings? rest.head?
-    let hash ← createRoot data.store (initialLog { task } uname) project (some task) image?
+    let hash ← createRoot data.store (spec.initialLog task uname) project (some task) image?
     emit hash.hex
     pure 0
   | "resume" :: pfx :: _ =>
@@ -233,20 +227,18 @@ private def dispatch (argv : List String) : Result UInt32 := do
   | "eval" :: pfx :: _ =>
     let data ← openData args
     let target ← resolve data.store pfx
-    let state ← getState data.store target
-    let command ← args.require "command" "e.g. --command 'pytest -x tests/test_foo.py'"
-    let overlay ← overlayOf args data state.image?
-    let rt ← evalRuntime data (← openWork data) args state.image?
-    try
-      let node ← evaluate rt target command overlay (force := args.isSet "force")
-      match (← getState data.store node).evaluation? with
-      | some e =>
-        let verdict := if e.passed then "pass" else s!"fail {e.returncode}"
-        emit s!"{node.hex}  {verdict}  ({e.elapsedMs} ms)"
-      | none => emit node.hex
-      pure 0
-    finally
-      Result.fromIO Error.storage rt.executor.close
+    let grader ← args.require "grader"
+      "e.g. --grader 'cp -R ./hidden-tests/. {checkout}/ && pytest -q'"
+    let timeout ← args.natD "timeout" 900
+    -- The checkout and the grader's output directory live under DATA/eval, beside the work
+    -- directory and as disposable: a fresh evaluation empties them first.
+    let node ← evaluate data.store (data.path / "eval") target grader timeout (args.isSet "force")
+    match (← getState data.store node).evaluation? with
+    | some e =>
+      let verdict := if e.passed then "pass" else s!"fail {e.returncode}"
+      emit s!"{node.hex}  {verdict}  ({e.elapsedMs} ms)"
+    | none => emit node.hex
+    pure 0
   | ["commit", pfx, dir] =>
     let data ← openData args
     let hash ← commit data.store (← resolve data.store pfx) dir
@@ -256,8 +248,13 @@ private def dispatch (argv : List String) : Result UInt32 := do
   | ["checkout", pfx, dir] =>
     let data ← openData args
     let state ← getState data.store (← resolve data.store pfx)
-    data.store.materialize state.workspace dir { onExisting := .replace }
-    emit s!"checked out {state.workspace.hex} into {dir}"
+    -- `--evidence` takes an evaluation's grader output instead of its workspace.
+    let tree ← if !args.isSet "evidence" then pure state.workspace else
+      match state.evaluation?.bind (·.evidence?) with
+      | some evidence => pure evidence
+      | none => throw <| .configuration "this state has no evidence: it is not an evaluation, or its grader wrote nothing"
+    data.store.materialize tree dir { onExisting := .replace }
+    emit s!"checked out {tree.hex} into {dir}"
     pure 0
   | "html" :: rest =>
     let data ← openData args
@@ -265,7 +262,8 @@ private def dispatch (argv : List String) : Result UInt32 := do
     -- Repeatable, and each may list several: --hide .venv --hide __pycache__,.pytest_cache
     let hidden := (args.all "hide").foldl (init := #[]) fun paths value =>
       paths ++ (value.splitOn ",").toArray.filter (!·.isEmpty)
-    let page ← Html.report data.store s!"alaya {data.path}" Agent.MiniSwe.view Agent.MiniSwe.tools hidden
+    let spec ← agentOf args
+    let page ← Html.report data.store s!"alaya {data.path}" spec.view spec.tools hidden
     Result.fromIO Error.storage (IO.FS.writeFile out page)
     emit s!"wrote {out} ({page.length} bytes)"
     pure 0
@@ -275,7 +273,7 @@ private def dispatch (argv : List String) : Result UInt32 := do
     pure 0
   | ["show", pfx] =>
     let data ← openData args
-    let view? := if args.isSet "view" then some Agent.MiniSwe.view else none
+    let view? ← if args.isSet "view" then some <$> (·.view) <$> agentOf args else pure none
     emitLines (← showLines data.store (← resolve data.store pfx) view?)
     pure 0
   | ["diff", a, b] =>
@@ -289,13 +287,13 @@ private def dispatch (argv : List String) : Result UInt32 := do
     pure 0
   | _ =>
     throw <| .configuration <|
-      "usage: alaya (root TASK (PROJECT | --path P --image I) | resume HASH --model P:M | step HASH --model P:M | " ++
-      "eval HASH --command C | commit HASH DIR [-m NOTE] [--tell TEXT] | tell HASH TEXT | " ++
-      "reply HASH TEXT | waiting | checkout HASH DIR | tree | " ++
-      "html [FILE] [--hide DIR] | " ++
-      "show HASH [--view] | diff A B | rm HASH) " ++
+      "usage: alaya (root TASK (PROJECT | --path P --image I) --agent A | resume HASH --agent A --model P:M | " ++
+      "step HASH --agent A --model P:M | " ++
+      "eval HASH --grader CMD | commit HASH DIR [-m NOTE] [--tell TEXT] | tell HASH TEXT | " ++
+      "reply HASH TEXT | waiting | checkout HASH DIR [--evidence] | tree | " ++
+      "html [FILE] --agent A [--hide DIR] | " ++
+      "show HASH [--view --agent A] | diff A B | rm HASH) " ++
       "[--data D] [--json] [--temperature T] [--url U] [--port N] [--echo-reasoning] [--image IMAGE] [--network N] " ++
-      "[--tests DIR | --test-patch FILE | --tests-from-image PATH] " ++
       "[--timeout S] [--force]"
 
 /-- Exit 0 on success, 3 when a run stopped at a question (see `exitWaiting`), 1 on error. -/

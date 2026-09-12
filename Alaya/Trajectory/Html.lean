@@ -146,9 +146,10 @@ private def stateJson (store : Store) (view : View) (hidden : Array String) (has
   let evaluation := match state.evaluation? with
     | none => Lean.Json.null
     | some e => .mkObj [
-        ("command", e.command), ("returncode", (e.returncode : Lean.Json)),
+        ("grader", e.grader), ("returncode", (e.returncode : Lean.Json)),
         ("elapsedMs", (e.elapsedMs : Lean.Json)), ("output", e.output),
-        ("passed", e.passed)]
+        ("passed", e.passed), ("summary", e.summary?.getD .null),
+        ("evidence", e.evidence?.map (Lean.Json.str ·.hex) |>.getD .null)]
   -- The context the model is sent from this state, as the view makes it. A state carries only
   -- what its own turn added to the parent's context when the view extended it — the common
   -- case, and linear in the forest — and the whole context when the view rewrote earlier
@@ -307,7 +308,7 @@ function summary(state) {
   if (state.kind === 'root') return state.note || 'root';
   if (state.kind === 'evaluation') {
     const e = state.evaluation || {};
-    return (e.passed ? 'pass' : 'fail ' + e.returncode) + '  ' + (e.command || '');
+    return (e.passed ? 'pass' : 'fail ' + e.returncode) + '  ' + (e.grader || '');
   }
   if (state.kind === 'intervention') return state.note || 'commit';
   if (state.kind === 'message') return (state.intervention || {}).message || 'message';
@@ -731,14 +732,22 @@ function renderEvaluation(parent, state) {
   if (!e) return;
   const box = section(parent, 'Evaluation');
   const meta = el('table', 'meta');
-  for (const [k, v] of [['command', e.command],
-                        ['verdict', (e.passed ? 'pass' : 'fail') + ' (rc ' + e.returncode + ')'],
-                        ['elapsed', e.elapsedMs + ' ms']]) {
+  const rows = [['grader', e.grader],
+                ['verdict', (e.passed ? 'pass' : 'fail') + ' (rc ' + e.returncode + ')'],
+                ['elapsed', e.elapsedMs + ' ms']];
+  if (e.evidence) rows.push(['evidence', e.evidence]);
+  for (const [k, v] of rows) {
     const row = el('tr');
     row.append(el('td', null, k), el('td', 'mono', v));
     meta.append(row);
   }
-  box.append(meta, foldable(el('pre', null, e.output), e.output.split('\\n').length + ' lines'));
+  box.append(meta);
+  if (e.summary) {
+    box.append(el('div', 'muted', 'verdict.json'));
+    box.append(el('pre', 'mono', JSON.stringify(e.summary, null, 2)));
+  }
+  box.append(el('div', 'muted', 'grader output'));
+  box.append(foldable(el('pre', null, e.output), e.output.split('\\n').length + ' lines'));
 }
 
 /* --- the model's context -----------------------------------------------

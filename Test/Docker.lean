@@ -188,29 +188,25 @@ def suite : Suite := Testing.suite "docker" #[
         | .configuration m => (m.splitOn "/no/such/path").length > 1
         | _ => false,
 
-  test "an evaluation runs its command in the trajectory's container" <| withDocker
+  test "a grader on the host sees what a container turn wrote" <| withDocker
     fun settings => do
       let work ← workspace
       let project := (← scratch) / "proj"
-      assertOk <| Result.fromIO Error.storage do
-        IO.FS.createDirAll project
-        IO.FS.writeFile (project / "app.txt") "code\n"
-      let tests := (← scratch) / "tests-src"
-      assertOk <| Result.fromIO Error.storage do
-        IO.FS.createDirAll tests
-        IO.FS.writeFile (tests / "check.sh") "grep -q code /workspace/app.txt\n"
+      assertOk <| Result.fromIO Error.storage (IO.FS.createDirAll project)
       let store ← assertOk <| Cas.Store.create ((← scratch) / "store")
-      let model ← scripted #[]
+      let model ← scripted #[toolResponse "echo made-in-container > made.txt"]
       let rt ← runtime settings work store model
       try
         let uname ← assertOk (Docker.uname settings)
         let root ← assertOk <| createRoot store (Agent.MiniSwe.initialLog miniConfig uname) project
           (some "t") (some settings.image)
-        -- `/workspace` only exists inside the container, so this passing proves where it ran.
-        let node ← assertOk <| evaluate rt root "sh check.sh && uname -s" (.directory tests)
+        let child ← assertOk <| stepOnce rt "test:model" root
+        -- The grader is a host program over a checkout; the container is not involved.
+        let node ← assertOk <| evaluate store ((← scratch) / "eval") child
+          "test -f {checkout}/made.txt && cat {checkout}/made.txt"
         let state ← assertOk (getState store node)
         assertEqual "passed" (state.evaluation?.map (·.passed)) (some true)
-        assertEqual "ran in the container" (state.evaluation?.map (·.output)) (some "Linux\n")
+        assertEqual "output" (state.evaluation?.map (·.output)) (some "made-in-container\n")
         assertEqual "image inherited" state.image? (some settings.image)
       finally
         rt.executor.close,

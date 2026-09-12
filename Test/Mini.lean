@@ -369,7 +369,8 @@ private def testsDir : TestM System.FilePath := do
   assertOk <| Result.fromIO Error.storage do
     IO.FS.createDirAll (dir / "tests")
     IO.FS.writeFile (dir / "tests" / "extra.txt") "hidden\n"
-  pure dir
+  -- Absolute: a grader runs inside the checkout, where a relative path would not resolve.
+  assertOk <| Result.fromIO Error.storage (IO.FS.realPath dir)
 
 private def emptyProject : TestM System.FilePath := do
   let proj := (← scratch) / "proj"
@@ -543,79 +544,68 @@ def trajectorySuite : Suite := suite "trajectory" #[
     check (← assertOk (rt.store.entryAt? state.workspace "junk.txt")).isNone
       "a fork must not start from the abandoned branch's workspace",
 
-  test "an evaluation's overlay never reaches a later turn" do
+  test "a grader runs on the host against a checkout, and its files never reach a later turn" do
     let rt ← cachedRuntime #[responseWith #[call "a" "bash" "echo hi > after.txt"]]
     let root ← mkRoot rt (← emptyProject)
-    let _ ← assertOk <| evaluate rt root "test -f tests/extra.txt" (.directory (← testsDir))
-    -- The hidden tests were overlaid into the work directory; the next turn must not see them.
-    let child ← assertOk <| stepOnce rt "test:model" root
-    let state ← assertOk (getState rt.store child)
-    check (← assertOk (rt.store.entryAt? state.workspace "tests/extra.txt")).isNone
-      "an evaluation's tests must never reach a state the agent continues from",
-
-  test "an evaluation is a leaf that nothing can be built on" do
-    let rt ← cachedRuntime #[responseWith #[call "c1" "bash" "echo hi"]]
-    let project ← emptyProject
-    assertOk <| Result.fromIO Error.storage (IO.FS.writeFile (project / "app.txt") "code\n")
-    let root ← mkRoot rt project
-    let node ← assertOk <| evaluate rt root "test -f tests/extra.txt" (.directory (← testsDir))
+    let tests ← testsDir
+    let scratch := (← scratch) / "eval"
+    let node ← assertOk <| evaluate rt.store scratch root
+      ("cp -R " ++ tests.toString ++ "/. {checkout}/ && test -f tests/extra.txt")
     let state ← assertOk (getState rt.store node)
     assertEqual "kind" state.kind Kind.evaluation
     assertEqual "verdict" (state.evaluation?.map (·.passed)) (some true)
-    -- The overlay is in the evaluated tree...
-    check (← assertOk (rt.store.entryAt? state.workspace "tests/extra.txt")).isSome
-      "expected the overlay in the evaluated workspace"
-    -- ...and not in the state that was evaluated.
-    check (← assertOk (rt.store.entryAt? (← assertOk (getState rt.store root)).workspace
-      "tests/extra.txt")).isNone "the agent's state must not gain the tests"
-    -- Nothing may continue from it.
+    -- The grader's copy went into the checkout, not into any state: the evaluation's workspace
+    -- is its parent's, and the next turn from the root does not see the tests either.
+    assertEqual "workspace is the parent's" state.workspace (← assertOk (getState rt.store root)).workspace
+    let child ← assertOk <| stepOnce rt "test:model" root
+    check (← assertOk (rt.store.entryAt? (← assertOk (getState rt.store child)).workspace "tests/extra.txt")).isNone
+      "a grader's files must never reach a state the agent continues from"
+    -- Nothing may continue from the evaluation.
     assertError "step" (stepOnce rt "test:model" node) fun
       | .configuration m => (m.splitOn "cannot continue from an evaluation").length > 1
       | _ => false
-    assertError "resume" (resume rt "test:model" node (fun _ => pure ())) fun
-      | .configuration m => (m.splitOn "cannot continue from an evaluation").length > 1
-      | _ => false
-    assertError "commit" (commit rt.store node project none) fun
+    assertError "commit" (commit rt.store node (← emptyProject) none) fun
       | .configuration m => (m.splitOn "cannot build on an evaluation").length > 1
       | _ => false,
 
-  test "a failing test command is recorded as a failing verdict, and re-evaluating is a no-op" do
+  test "a failing grader is a failing verdict, and re-evaluating is a no-op" do
     let rt ← cachedRuntime #[]
     let root ← mkRoot rt (← emptyProject)
-    let node ← assertOk <| evaluate rt root "exit 3" .nothing
+    let scratch := (← scratch) / "eval"
+    let node ← assertOk <| evaluate rt.store scratch root "exit 3"
     let state ← assertOk (getState rt.store node)
     assertEqual "returncode" (state.evaluation?.map (·.returncode)) (some 3)
     assertEqual "passed" (state.evaluation?.map (·.passed)) (some false)
-    assertEqual "same node again" (← assertOk <| evaluate rt root "exit 3" .nothing) node
+    assertEqual "no evidence" (state.evaluation?.bind (·.evidence?)) none
+    assertEqual "same node again" (← assertOk <| evaluate rt.store scratch root "exit 3") node
     assertEqual "one child" (← assertOk (children rt.store root)).size 1
-    -- A different command is a separate evaluation of the same state.
-    let other ← assertOk <| evaluate rt root "true" .nothing
-    check (other != node) "expected a distinct node for a distinct command"
+    -- A different grader is a separate evaluation of the same state.
+    let other ← assertOk <| evaluate rt.store scratch root "true"
+    check (other != node) "expected a distinct node for a distinct grader"
     assertEqual "two children" (← assertOk (children rt.store root)).size 2,
 
-  test "a test patch is applied to the root's files, over the agent's edits" do
-    let rt ← cachedRuntime #[responseWith #[call "c1" "bash" "echo 'assert True' > test_x.py; echo new > extra.py"]]
+  test "a grader's verdict.json decides, and its output directory is kept as evidence" do
+    let rt ← cachedRuntime #[]
     let project ← emptyProject
-    assertOk <| Result.fromIO Error.storage (IO.FS.writeFile (project / "test_x.py") "assert 1 == 1\n")
+    assertOk <| Result.fromIO Error.storage (IO.FS.writeFile (project / "app.txt") "code\n")
     let root ← mkRoot rt project
-    -- The agent weakens the test and adds a file.
-    let edited ← assertOk <| stepOnce rt "test:model" root
-    let patch := "--- a/test_x.py\n+++ b/test_x.py\n@@ -1 +1,2 @@\n-assert 1 == 1\n+assert 1 == 2\n+assert 2 == 2\n" ++
-      "--- /dev/null\n+++ b/test_new.py\n@@ -0,0 +1 @@\n+assert 3 == 3\n"
-    let node ← assertOk <| evaluate rt edited "cat test_x.py test_new.py extra.py" (.patch patch)
+    let scratch := (← scratch) / "eval"
+    -- Exit status 1, but the verdict says passed: the verdict wins. The report beside it is kept.
+    let grader := "test -f {checkout}/app.txt && " ++
+      "printf '{\"passed\": true, \"score\": 3}' > {out}/verdict.json && echo detail > {out}/report.txt && exit 1"
+    let node ← assertOk <| evaluate rt.store scratch root grader
     let state ← assertOk (getState rt.store node)
-    -- test_x.py comes from the root, patched — not from the agent's weakened copy; test_new.py is
-    -- created; the agent's other file is untouched.
-    assertEqual "hidden test wins" (state.evaluation?.map (·.output))
-      (some "assert 1 == 2\nassert 2 == 2\nassert 3 == 3\nnew\n")
-    assertEqual "patch recorded" (state.evaluation?.bind (·.tests?)).isSome true,
-
-  iotest "patchPaths reads created, modified, and deleted files" do
-    let diff := "--- a/x.py\n+++ b/x.py\n@@ -1 +1 @@\n-a\n+b\n" ++
-      "--- /dev/null\n+++ b/new.py\n@@ -0,0 +1 @@\n+n\n" ++
-      "--- a/old.py\n+++ /dev/null\n@@ -1 +0,0 @@\n-o\n"
-    if patchPaths diff != #["x.py", "new.py", "old.py"] then
-      throw (IO.userError s!"paths: {patchPaths diff}"),
+    let some e := state.evaluation? | fail "expected an evaluation"
+    assertEqual "returncode" e.returncode 1
+    check e.passed "verdict.json says passed"
+    assertEqual "score" (e.summary?.bind fun s => (s.getObjVal? "score" >>= Lean.Json.getNat?).toOption) (some 3)
+    let some evidence := e.evidence? | fail "expected the output directory as evidence"
+    assertEqual "report kept"
+      ((← assertOk (rt.store.readPath evidence "report.txt")).map (String.fromUTF8? ·))
+      (some (some "detail\n"))
+    check (← assertOk (rt.store.entryAt? evidence "verdict.json")).isSome "verdict.json is in the evidence"
+    -- The checkout is gone afterwards; only the store holds what was tested.
+    check (!(← (scratch / "checkout").pathExists)) "the checkout is discarded",
 
   test "resume drives to submission and records a chain of turns" do
     let rt ← cachedRuntime #[

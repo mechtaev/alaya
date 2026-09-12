@@ -142,8 +142,7 @@ inductive Kind where
   | turn
   /-- A person's workspace change, with the parent's log — plus a notice, when they left one. -/
   | intervention
-  /-- A test run against a state, with an overlay the agent never saw. Always a leaf: see
-  `Evaluation`. -/
+  /-- A grader's verdict on a state. Always a leaf: see `Evaluation`. -/
   | evaluation
   /-- A person's message to the agent with no workspace change: see `tell`. -/
   | message
@@ -205,17 +204,26 @@ structure Question where
 This is a separate axis from `Outcome`, which says how a *run* ended: a submitted run can fail
 its tests and a run that hit the step limit can pass them. -/
 structure Evaluation where
-  command : String
+  /-- The grader command as given, with its `{checkout}` and `{out}` placeholders unexpanded. -/
+  grader : String
   returncode : Int
   elapsedMs : Nat
-  /-- Truncated, so a failing run stays readable in `show`. -/
+  /-- The grader's stdout and stderr, merged and truncated, so a failing run stays readable. -/
   output : String
-  /-- What was overlaid onto the workspace before the command ran: a directory snapshot, or the
-  patch blob. Content-addressed, so the same test set across many trajectories is stored once. -/
-  tests? : Option Hash := none
+  /-- A snapshot of the grader's output directory — reports, logs, whatever it wrote to `{out}` —
+  or `none` when it wrote nothing. -/
+  evidence? : Option Hash := none
+  /-- The grader's `{out}/verdict.json`, when it wrote one: a JSON object whose `passed` field,
+  if present, is the verdict, with any other fields the grader wants a reader to see. -/
+  summary? : Option Lean.Json := none
   deriving Inhabited
 
-def Evaluation.passed (evaluation : Evaluation) : Bool := evaluation.returncode == 0
+/-- Whether the state passed: the grader's own `passed` when its summary has one, otherwise a
+zero exit status. -/
+def Evaluation.passed (evaluation : Evaluation) : Bool :=
+  match evaluation.summary?.bind fun s => (s.getObjVal? "passed" >>= Lean.Json.getBool?).toOption with
+  | some verdict => verdict
+  | none => evaluation.returncode == 0
 
 /-- A node of the trajectory tree, content-addressed in the store. `appended` are the events
 this state adds to its parent's log (the full log is the concatenation from the root); `workspace` is
@@ -258,17 +266,21 @@ def continuable (state : State) : Except String Unit := do
 
 private def evaluationToJson (e : Evaluation) : Lean.Json :=
   .mkObj [
-    ("command", e.command), ("returncode", (e.returncode : Lean.Json)),
+    ("grader", e.grader), ("returncode", (e.returncode : Lean.Json)),
     ("elapsed_ms", (e.elapsedMs : Lean.Json)), ("output", e.output),
-    ("tests", e.tests?.map (Lean.Json.str ·.hex) |>.getD .null)]
+    ("evidence", e.evidence?.map (Lean.Json.str ·.hex) |>.getD .null),
+    ("summary", e.summary?.getD .null)]
 
 private def evaluationFromJson (json : Lean.Json) : Except String Evaluation := do
-  let command ← json.getObjVal? "command" >>= Lean.Json.getStr?
+  let grader ← json.getObjVal? "grader" >>= Lean.Json.getStr?
   let returncode ← json.getObjVal? "returncode" >>= Lean.Json.getInt?
   let elapsedMs ← json.getObjVal? "elapsed_ms" >>= Lean.Json.getNat?
   let output ← json.getObjVal? "output" >>= Lean.Json.getStr?
-  let tests? := (json.getObjVal? "tests" >>= Lean.Json.getStr?).toOption.map (⟨·⟩)
-  pure { command, returncode, elapsedMs, output, tests? }
+  let evidence? := (json.getObjVal? "evidence" >>= Lean.Json.getStr?).toOption.map (⟨·⟩)
+  let summary? := match json.getObjVal? "summary" with
+    | .ok .null | .error _ => none
+    | .ok v => some v
+  pure { grader, returncode, elapsedMs, output, evidence?, summary? }
 
 private def outcomeToJson (o : Outcome) : Lean.Json :=
   .mkObj [("status", o.status), ("submission", o.submission)]
@@ -339,18 +351,23 @@ end State
 
 /-! ## The store as a trajectory tree
 
-Each state is a store blob addressed by its own content; two refs record liveness so `Store.gc`
-preserves exactly the reachable nodes and workspaces: `state.<hex>` pins the node blob and
-`workspace.<hex>` pins its workspace tree. -/
+Each state is a store blob addressed by its own content; two kinds of ref record liveness so
+`Store.gc` preserves exactly the reachable nodes and trees: `state.<hex>` pins the node blob and
+`workspace.<hex>` pins a tree it refers to — its workspace, and an evaluation's evidence. -/
 
 private def stateRef (h : Hash) : String := "state." ++ h.hex
 private def workspaceRef (h : Hash) : String := "workspace." ++ h.hex
+
+/-- The trees a state keeps alive: its workspace, and an evaluation's evidence. -/
+private def treesOf (state : State) : Array Hash :=
+  #[state.workspace] ++ (state.evaluation?.bind (·.evidence?)).toArray
 
 /-- Persists a state, returning its content hash, and pins its liveness refs. -/
 def putState (store : Store) (state : State) : Result Hash := do
   let hash ← store.putBytes state.toJson.compress.toUTF8
   store.setRef (stateRef hash) hash
-  store.setRef (workspaceRef state.workspace) state.workspace
+  for tree in treesOf state do
+    store.setRef (workspaceRef tree) tree
   pure hash
 
 /-- Loads the state at `hash`. -/
@@ -394,12 +411,6 @@ partial def logOf (store : Store) (hash : Hash) : Result Log := do
     | none => pure #[]
   pure (ancestors ++ state.appended)
 
-/-- The root of the tree `state` belongs to: the project as it was given. -/
-partial def rootOf (store : Store) (state : State) : Result State :=
-  match state.parent? with
-  | none => pure state
-  | some parent => do rootOf store (← getState store parent)
-
 /-- The transitive subtree rooted at `hash` (inclusive). -/
 partial def subtree (store : Store) (hash : Hash) : Result (Array Hash) := do
   let kids ← children store hash
@@ -421,8 +432,8 @@ def removeSubtree (store : Store) (hash : Hash) : Result Nat := do
     if name.startsWith "workspace." then store.deleteRef name
   let survivors := (← allStates store)
   for s in survivors do
-    let state ← getState store s
-    store.setRef (workspaceRef state.workspace) state.workspace
+    for tree in treesOf (← getState store s) do
+      store.setRef (workspaceRef tree) tree
   let _ ← store.gc
   pure doomed.size
 
@@ -444,9 +455,10 @@ def buildModel (spec : String) (temperature : Float) (cacheDir : System.FilePath
 
 /-! ## Driving the agent, recording each turn as a state -/
 
-/-- The live run: the store holding every durable artefact, the working directory holding
-none, the executor that runs commands in it, the model, and the agent being driven. -/
-structure Runtime where
+/-- Where a trajectory's files live and its commands run: the store holding every durable
+artefact, the working directory holding none, and the executor. Enough for everything that does
+not sample — checking a state out, evaluating it — and the part of a `Runtime` that is. -/
+structure Sandbox where
   /-- Where everything durable lives. -/
   store : Store
   /-- Where the agent acts. Wiped and re-materialized from a snapshot at every checkout, so
@@ -454,6 +466,9 @@ structure Runtime where
   workDir : System.FilePath
   /-- Where shell commands run: the agent's, and an evaluation's test command. -/
   executor : Executor
+
+/-- The live run: a sandbox, the model, and the agent being driven. -/
+structure Runtime extends Sandbox where
   model : Model
   agent : Agent
 
@@ -518,19 +533,18 @@ def advance (rt : Runtime) (note : String) (parent : Hash) (log : Log) (workspac
 
 /-- Materializes `workspace` into `rt.workDir`, replacing whatever is there.
 
-The work directory is modified after every checkout — by the commands of the run, and by the
-overlay an evaluation applies — so `MaterializeConfig.verify`, on by default, is what keeps this
-sound: without re-capturing the directory first, an incremental materialize would trust a stale
-record and leave everything those writes added, so a fork would start from the abandoned
-branch's files and a turn after an evaluation would start from the hidden tests. -/
-private def checkoutInto (rt : Runtime) (workspace : Hash) : Result Unit :=
-  rt.store.materialize workspace rt.workDir { onExisting := .replace }
+The work directory is modified after every checkout by the commands of the run, so
+`MaterializeConfig.verify`, on by default, is what keeps this sound: without re-capturing the
+directory first, an incremental materialize would trust a stale record and leave everything
+those writes added, so a fork would start from the abandoned branch's files. -/
+private def checkoutInto (sandbox : Sandbox) (workspace : Hash) : Result Unit :=
+  sandbox.store.materialize workspace sandbox.workDir { onExisting := .replace }
 
 /-- Advances exactly one model turn from `hash`, returning the new child state. -/
 def stepOnce (rt : Runtime) (note : String) (hash : Hash) : Result Hash := do
   let state ← getState rt.store hash
   Result.fromExcept Error.configuration state.continuable
-  checkoutInto rt state.workspace
+  checkoutInto rt.toSandbox state.workspace
   let (child, _, _, _) ← advance rt note hash (← logOf rt.store hash) state.workspace
   pure child
 
@@ -540,7 +554,7 @@ partial def resume (rt : Runtime) (note : String) (hash : Hash)
     (onStep : Hash -> Result Unit) : Result Hash := do
   let start ← getState rt.store hash
   Result.fromExcept Error.configuration start.continuable
-  checkoutInto rt start.workspace
+  checkoutInto rt.toSandbox start.workspace
   let rec go (parent : Hash) (log : Log) (workspace : Hash) : Result Hash := do
     let (child, log, workspace, halt) ← advance rt note parent log workspace
     onStep child
@@ -551,96 +565,20 @@ partial def resume (rt : Runtime) (note : String) (hash : Hash)
 
 /-! ## Evaluation
 
-Running tests against a state is deliberately not part of the run: the tests are an overlay the
-agent never saw, and letting them into a state it could continue from would both contaminate the
-trajectory and, for a benchmark, invalidate the measurement. So an evaluation is a leaf child
-whose workspace is the agent's plus the overlay, and `resume`/`step`/`commit` refuse it. -/
+Grading a state is deliberately not part of the run, and not the agent's business: a **grader**
+is a program the person supplies, run on the host against a fresh checkout of the state's
+workspace. It may copy hidden tests over the checkout, apply a patch to it, re-render a clean
+project from a source it controls and carry only the agent's edits across, run a container, or
+anything else; the trajectory only provides the checkout, collects what the grader says, and
+records the verdict as a leaf child. Nothing the grader does reaches a state the agent could
+continue from, because the checkout is a separate directory that is discarded afterwards. -/
 
-/-- What to overlay onto a state's workspace before the test command runs. Both forms are
-authoritative: what they carry replaces what the agent left, so an agent that weakened a test
-cannot decide its own verdict. -/
-inductive Overlay where
-  | nothing
-  /-- A host directory whose contents are copied over the workspace. -/
-  | directory (path : System.FilePath)
-  /-- A unified diff against the project as it was at the root. The files it touches are
-  taken from the root snapshot, not from the agent's workspace, so it applies to pristine
-  content and an edit the agent made to a test cannot survive. -/
-  | patch (contents : String)
+/-- The grader command with its placeholders expanded: `{checkout}` is the directory holding the
+state's files, `{out}` an empty directory for whatever the grader wants kept. -/
+def expandGrader (grader : String) (checkout out : System.FilePath) : String :=
+  (grader.replace "{checkout}" checkout.toString).replace "{out}" out.toString
 
-/-- The paths a unified diff touches: the `+++` side, or the `---` side of a deletion, without
-git's `a/`/`b/` prefixes. -/
-def patchPaths (patch : String) : Array String := Id.run do
-  let strip (line : String) : Option String :=
-    let target := (((line.drop 4).toString.splitOn "\t").headD "").trimAscii.toString
-    if target == "/dev/null" || target.isEmpty then none
-    else if target.startsWith "a/" || target.startsWith "b/" then some (target.drop 2).toString
-    else some target
-  let lines := (patch.splitOn "\n").toArray
-  let mut paths := #[]
-  for i in [0:lines.size] do
-    let line := lines[i]!
-    if line.startsWith "+++ " then
-      -- A deletion names /dev/null here; the path is then on the `---` line before it.
-      let path? := (strip line).orElse fun _ =>
-        if i > 0 && lines[i-1]!.startsWith "--- " then strip lines[i-1]! else none
-      if let some path := path? then
-        if !paths.contains path then paths := paths.push path
-  paths
-
-/-- The overlay's content address, so an evaluation records exactly what was applied and the
-same test set shared by many trajectories is stored once. -/
-private def overlayHash (store : Store) : Overlay -> Result (Option Hash)
-  | .nothing => pure none
-  | .directory path => some <$> store.snapshot path
-  | .patch contents => some <$> store.putBytes contents.toUTF8
-
-/-- Runs a shell command in the work directory through the runtime's executor. -/
-private def execBash (rt : Runtime) (command : String) : Result Output :=
-  Result.fromIO Error.storage (rt.executor.bash rt.workDir command)
-
-private def applyOverlay (rt : Runtime) (state : State) : Overlay -> Result Unit
-  | .nothing => pure ()
-  | .directory path => do
-    let source ← Result.fromIO Error.storage (IO.FS.realPath path)
-    let copy ← Result.fromIO Error.storage (IO.Process.output {
-      cmd := "cp", args := #["-R", s!"{source}/.", rt.workDir.toString] })
-    if copy.exitCode != 0 then
-      throw <| .storage s!"cannot overlay {source}: {copy.stderr}"
-  | .patch contents => do
-    let paths := patchPaths contents
-    if paths.isEmpty then throw <| .configuration "the test patch touches no files"
-    -- Each file the patch touches is first restored from the root snapshot — the project as
-    -- given — so the agent's version of it cannot survive; a path the root does not have is
-    -- removed, since the patch creates it.
-    let root ← rootOf rt.store state
-    for path in paths do
-      if !Cas.safeRelativePath path then throw <| .configuration s!"the test patch names an unsafe path: {path}"
-      let target := rt.workDir / path
-      match ← rt.store.readPath root.workspace path with
-      | some bytes => Result.fromIO Error.storage do
-          if let some parent := target.parent then IO.FS.createDirAll parent
-          IO.FS.writeBinFile target bytes
-      | none => Result.fromIO Error.storage do
-          if ← target.pathExists then IO.FS.removeFile target
-    -- Then the diff is applied on the host with `patch(1)`, which every host has; the container,
-    -- if any, sees the result through the bind mount.
-    let applied ← Result.fromIO Error.storage do
-      let child ← IO.Process.spawn {
-        cmd := "patch", args := #["-p1", "--batch", "--no-backup-if-mismatch"]
-        cwd := some rt.workDir, stdin := .piped, stdout := .piped, stderr := .piped }
-      let (stdin, child) ← child.takeStdin
-      stdin.putStr contents
-      stdin.flush
-      let _ := stdin   -- dropping the handle closes the pipe
-      let out ← child.stdout.readToEnd
-      let err ← child.stderr.readToEnd
-      let code ← child.wait
-      pure (code, out ++ err)
-    if applied.1 != 0 then
-      throw <| .configuration s!"applying the test patch failed: {applied.2}"
-
-/-- Keeps a test run readable in `show` without putting megabytes in a state blob. -/
+/-- Keeps a grader's output readable in `show` without putting megabytes in a state blob. -/
 private def truncateOutput (s : String) : String :=
   if s.length <= 20000 then s
   else
@@ -648,43 +586,70 @@ private def truncateOutput (s : String) : String :=
     String.ofList (s.toList.take 10000) ++ s!"\n… {elided} characters elided …\n" ++
       String.ofList (s.toList.drop (s.length - 10000))
 
-/-- An evaluation of `hash` that already ran this command against this overlay. -/
-def evaluationOf? (store : Store) (hash : Hash) (command : String) (tests? : Option Hash) :
-    Result (Option Hash) := do
+/-- An evaluation of `hash` that already ran this grader. -/
+def evaluationOf? (store : Store) (hash : Hash) (grader : String) : Result (Option Hash) := do
   for child in ← children store hash do
     let state ← getState store child
     if state.kind == .evaluation then
       if let some e := state.evaluation? then
-        if e.command == command && e.tests? == tests? then return some child
+        if e.grader == grader then return some child
   pure none
 
-/-- Runs `command` against `hash`'s workspace with `overlay` applied, and records the verdict as
-a leaf child. The command runs wherever the trajectory runs — in its pinned container, if it has
-one — under the executor's timeout, which a caller should set far higher than an agent's
-per-command limit. Re-evaluating the same state, command, and overlay returns the existing node
-unless `force`. -/
-def evaluate (rt : Runtime) (hash : Hash) (command : String) (overlay : Overlay)
-    (force : Bool := false) : Result Hash := do
-  let state ← getState rt.store hash
+/-- Empties `dir`, creating it if needed. -/
+private def emptyDir (dir : System.FilePath) : Result Unit :=
+  Result.fromIO Error.storage do
+    if ← dir.pathExists then IO.FS.removeDirAll dir
+    IO.FS.createDirAll dir
+
+/-- Whether `dir` has any entry. -/
+private def nonEmpty (dir : System.FilePath) : Result Bool :=
+  Result.fromIO Error.storage do pure (!(← dir.readDir).isEmpty)
+
+/-- Runs `grader` against a fresh checkout of `hash`'s workspace and records the verdict as a
+leaf child. The command runs on the host through `/bin/sh`, in the checkout, with `{checkout}`
+and `{out}` expanded (see `expandGrader`), under `timeoutSeconds`. Its merged output and exit
+status are recorded; whatever it left in `{out}` is snapshotted as `evidence?`, and an
+`{out}/verdict.json` becomes `summary?`, whose `passed` field decides the verdict when present.
+`scratch` is a directory the trajectory may wipe: the checkout and the output directory are
+made under it. Re-evaluating a state with the same grader returns the existing node unless
+`force`. -/
+def evaluate (store : Store) (scratch : System.FilePath) (hash : Hash) (grader : String)
+    (timeoutSeconds : Nat := 900) (force : Bool := false) : Result Hash := do
+  let state ← getState store hash
   if state.kind == .evaluation then
     throw <| .configuration "cannot evaluate an evaluation: it is already a leaf"
-  let tests? ← overlayHash rt.store overlay
   if !force then
-    if let some existing ← evaluationOf? rt.store hash command tests? then return existing
-  checkoutInto rt state.workspace
-  applyOverlay rt state overlay
+    if let some existing ← evaluationOf? store hash grader then return existing
+  -- Absolute paths: the command runs with the checkout as its working directory, where a
+  -- relative `{checkout}` or `{out}` would not resolve.
+  Result.fromIO Error.storage (IO.FS.createDirAll scratch)
+  let scratch ← Result.fromIO Error.storage (IO.FS.realPath scratch)
+  let checkout := scratch / "checkout"
+  let out := scratch / "out"
+  emptyDir checkout
+  emptyDir out
+  store.materialize state.workspace checkout { onExisting := .replace }
+  let command := expandGrader grader checkout out
+  let runner := Executor.onHost { timeoutSeconds }
   let started ← Result.fromIO Error.storage IO.monoMsNow
-  let output ← execBash rt command
+  let output ← Result.fromIO Error.storage (runner.bash checkout command)
   let elapsedMs := (← Result.fromIO Error.storage IO.monoMsNow) - started
-  let workspace ← rt.store.snapshot rt.workDir
-  putState rt.store {
-    parent? := some hash, workspace, kind := .evaluation, appended := #[]
+  let evidence? ← if ← nonEmpty out then some <$> store.snapshot out else pure none
+  let summary? ← Result.fromIO Error.storage do
+    let verdict := out / "verdict.json"
+    if !(← verdict.pathExists) then pure none
+    else match Lean.Json.parse (← IO.FS.readFile verdict) with
+      | .ok json => pure (some json)
+      | .error _ => pure none
+  Result.fromIO Error.storage (IO.FS.removeDirAll checkout)
+  putState store {
+    parent? := some hash, workspace := state.workspace, kind := .evaluation, appended := #[]
     image? := state.image?
     evaluation? := some {
-      command, returncode := output.returncode, elapsedMs
+      grader, returncode := output.returncode, elapsedMs
       output := truncateOutput (output.output ++
         (if output.exceptionInfo.isEmpty then "" else s!"\n{output.exceptionInfo}"))
-      tests? } }
+      evidence?, summary? } }
 
 /-! ## Root creation and what a person adds -/
 
@@ -828,7 +793,7 @@ private def label (state : State) : String :=
     match state.evaluation? with
     | some e =>
       let verdict := if e.passed then "pass" else s!"fail {e.returncode}"
-      s!"eval  [{verdict}]  " ++ flatten e.command
+      s!"eval  [{verdict}]  " ++ flatten e.grader
     | none => "eval"
 
 private def outcomeSuffix (state : State) : String :=
@@ -888,10 +853,11 @@ def showLines (store : Store) (hash : Hash) (view? : Option View := none) :
   if let some note := state.note? then lines := lines.push s!"note     {note}"
   if let some image := state.image? then lines := lines.push s!"image    {image}"
   if let some e := state.evaluation? then
-    lines := lines.push s!"command  {e.command}"
+    lines := lines.push s!"grader   {e.grader}"
     lines := lines.push s!"verdict  {if e.passed then "pass" else "fail"} (rc={e.returncode}, {e.elapsedMs} ms)"
-    if let some tests := e.tests? then lines := lines.push s!"tests    {tests.hex}"
-    lines := lines.push "--- test output ---"
+    if let some evidence := e.evidence? then lines := lines.push s!"evidence {evidence.hex}"
+    if let some summary := e.summary? then lines := lines.push s!"summary  {summary.compress}"
+    lines := lines.push "--- grader output ---"
     lines := lines.push e.output
   if let some o := state.outcome? then
     lines := lines.push s!"outcome  {o.status}"
