@@ -646,9 +646,9 @@ def evaluate (store : Store) (scratch : System.FilePath) (hash : Hash) (grader :
     parent? := some hash, workspace := state.workspace, kind := .evaluation, appended := #[]
     image? := state.image?
     evaluation? := some {
-      grader, returncode := output.returncode, elapsedMs
+      grader, returncode := output.exitCode?.map (fun c => Int.ofNat c.toNat) |>.getD (-1), elapsedMs
       output := truncateOutput (output.output ++
-        (if output.exceptionInfo.isEmpty then "" else s!"\n{output.exceptionInfo}"))
+        (match output.error? with | some e => s!"\n{e}" | none => ""))
       evidence?, summary? } }
 
 /-! ## Root creation and what a person adds -/

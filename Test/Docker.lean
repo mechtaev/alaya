@@ -15,7 +15,8 @@ open Alaya.Trajectory
 private def imageReference : String := "alpine:3"
 
 /-- Mini's command settings, with a short timeout. -/
-private def miniConfig : Agent.MiniSwe.Config := { task := "t", timeoutSeconds := 5 }
+private def miniConfig : Agent.MiniSwe.Config :=
+  { task := "t", executor := { Agent.MiniSwe.defaultExecutor with timeoutSeconds := 5 } }
 
 private def config : Executor.Config := miniConfig.executor
 
@@ -83,7 +84,7 @@ def suite : Suite := Testing.suite "docker" #[
       let executor ← assertOk (Docker.executor settings config)
       try
         let wrote ← executor.exec work #["echo hi > a.txt; cat a.txt"] "cat"
-        assertEqual "returncode" wrote.returncode 0
+        assertEqual "exit code" wrote.exitCode? (some 0)
         assertEqual "output" wrote.output "hi\n"
         -- The file the container wrote is in the host directory the store snapshots.
         assertEqual "host sees it" (← IO.FS.readFile (work / "a.txt")) "hi\n"
@@ -102,7 +103,7 @@ def suite : Suite := Testing.suite "docker" #[
         let merged ← executor.exec work #["echo out; echo err >&2"] "echo"
         assertEqual "merged" merged.output "out\nerr\n"
         let failing ← executor.exec work #["exit 3"] "exit 3"
-        assertEqual "exit code passes through" failing.returncode 3
+        assertEqual "exit code passes through" failing.exitCode? (some 3)
       finally
         executor.close,
 
@@ -116,15 +117,14 @@ def suite : Suite := Testing.suite "docker" #[
       finally
         executor.close,
 
-  test "a command past the timeout is mini's timeout observation" <| withDocker
+  test "a command past the timeout is a timeout observation" <| withDocker
     fun settings => do
       let work ← workspace
       let executor ← assertOk (Docker.executor settings { config with timeoutSeconds := 1 })
       try
         let out ← executor.exec work #["sleep 30"] "sleep 30"
-        assertEqual "returncode" out.returncode (-1)
-        assertEqual "exception" out.exceptionInfo
-          "An error occurred while executing the command: Command 'sleep 30' timed out after 1 seconds"
+        assertEqual "no exit code" out.exitCode? none
+        assertEqual "error" out.error? (some "'sleep 30' timed out after 1 seconds")
         -- The run survives it: the next command still works.
         let after ← executor.exec work #["echo alive"] "echo alive"
         assertEqual "still usable" after.output "alive\n"

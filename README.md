@@ -43,6 +43,6 @@ forked, evaluated against hidden tests, and continued after a person intervenes.
 specifies the state object, the store layout, the model cache entry, and every `alaya` command.
 
 [`docs/miniswe.md`](docs/miniswe.md) — the MiniSwe design. `Alaya.Agent.MiniSwe` is the port of
-mini-SWE-agent as one agent: prompts, tool schema, parsing, error messages, and the observation
-envelope match the original to the byte, with the deviations listed and the command execution
-reproducing Python's `Popen` semantics on the host or in a container.
+mini-SWE-agent as one agent: the original's prompts, `bash` tool, and protocol for reading a
+response and answering a malformed one, realized through the agent API with Lean-native
+rendering, and commands run on the host or in a container.

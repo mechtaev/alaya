@@ -248,7 +248,7 @@ private def execIn (ref : IO.Ref (Option Container)) (settings : Settings) (conf
         if (code == 124 || code == 137 || code == 143) &&
             elapsedMs >= config.timeoutSeconds * 1000 then
           pure (timedOut output display config.timeoutSeconds)
-        else pure { output, returncode := Int.ofNat code.toNat }
+        else pure { output, exitCode? := some code }
   catch e =>
     pure (failed (toString e))
 

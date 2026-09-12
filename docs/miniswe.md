@@ -1,191 +1,172 @@
 # MiniSwe design
 
 `Alaya.Agent.MiniSwe` is a port of [mini-SWE-agent](https://github.com/SWE-agent/mini-swe-agent)'s
-default tool-calling agent — `mini.yaml`, `litellm_model`, `actions_toolcall` — as an
-`Alaya.Agent.Agent`. The goal is fidelity where the model can observe it: same prompts, same
-tool schema, same parsing, same messages, same observation format, to the byte. Two things
-differ, both because the trajectory keeps what happened apart from what the model sees, and
-both are named below.
+default tool-calling agent as an `Alaya.Agent.Agent`. It keeps what defines that agent — its
+prompts, its one `bash` tool, its protocol for reading a response and answering a malformed one,
+its limits — and realizes them through the five operations of the agent API
+(`docs/agent-api.md`): the tools, the view, `next`, `act`, and an identity. Rendering and
+execution are Lean's own rather than imitations of the Python original; the differences that
+change behaviour are listed in §7.
 
-## 1. What is byte-identical
+## 1. The agent
 
-Golden fixtures in `Test/MiniFixtures.lean` are rendered by mini's own jinja templates, and the
-tests compare the port's output to them character by character:
-
-- the system prompt and the instance prompt, for both the Linux and the macOS variant (the
-  macOS one adds a note about `sed -i ''`);
-- the `bash` tool schema, mini's `BASH_TOOL` in strict mode (see §8);
-- the observation envelope, including jinja's `tojson` escaping (`ensure_ascii`, and `<`, `>`,
-  `&`, `'` as `\uXXXX`) and the truncation at 10 000 characters;
-- the format-error messages, including the truncation notice for a response the provider cut
-  off.
-
-Where the port deliberately differs, the test applies the same substitution to the fixture and
-checks the rest still matches (`portOf` in `Test/Mini.lean`).
-
-## 2. Prompts
-
-**Problem.** The instance prompt tells the model what machine it is on, and a model that is told
-the wrong operating system uses the wrong `sed`.
-
-**How it works.** `initialLog config uname` produces the two opening events: the system message
-and the rendered instance message with the task and the `uname` line. The `uname` comes from the
-**executor** — the host, or the image a container run is pinned to — because that is where the
-commands will run. The opening log is frozen into the root state, so a continuation months later
-still describes the machine the run is pinned to.
-
-The only change to mini's text is the two sentences that name the submission sentinel, which
-now name the `submit` tool (`miniSubmitInstruction` → `submitInstruction`). Everything else,
-down to jinja's stripped trailing newline, is mini's.
-
-## 3. Tools
-
-**`bash`** is mini's: an object with one required string property, `command`. It is serialized
-in strict mode, so the model sees mini's schema plus `"additionalProperties": false`.
-
-**`submit`** is the port's, and it is the first deliberate deviation. Mini ends a run when a
-command's output starts with the line `COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT`: its environment
-scans every command's output for the sentinel, and everything after that line is the
-submission. That puts the end of the run inside a tool's output, which means whoever drives the
-agent has to read and interpret observations. Here the driver is the trajectory, which treats
-observations as opaque JSON by design, so the end of a run has to be visible in the log's
-structure instead: the model calls `submit` with a `message` saying what it did, and `next`
-returns `done` with that message as the submission. The prompt's two instructions and the closing hint of the format-error message say so.
-
-The tool list is sent with every request, so this changes every cache key relative to a mini run
-with the sentinel; a trajectory recorded before the change still loads, but continuing it asks
-the provider anew.
-
-## 4. Reading a response
-
-**Problem.** Models emit turns with no tool call, unknown tools, and arguments that are not
-JSON; mini turns each into a specific message and keeps going.
-
-**How it works.** `parseActions` reproduces `parse_toolcall_actions`. A response with no tool
-calls is a format error. Each call must have arguments that parse as JSON, name `bash` or
-`submit`, and, for `bash`, carry a `command`; the first offender produces the error, and the
-messages concatenate as in mini, where unparseable arguments read as `{}` and so also trip the
-missing-command message. A `bash` action carries the raw JSON value of `command`, whatever its
-type. When the provider reports that it cut the response off (`finish_reason` `length`, or
-`tool_calls` with no calls), the format error is the truncation notice instead.
-
-The consequences of a format error are mini's: the offending assistant turn is **not** shown to
-the model, the error is shown as a user turn, and after `maxConsecutiveFormatErrors` in a row
-(default 3) the run ends with `RepeatedFormatError`. In the port both live in the view and in
-`next`: the response event is recorded as it was, the view substitutes the user turn, and `next`
-counts trailing format-error responses by re-parsing them.
-
-## 5. Running a command
-
-**Problem.** Mini's environment is Python's `Popen(command, shell=True, stderr=STDOUT)` with a
-timeout that kills the process group and output decoded with `errors="replace"`. Error messages,
-line numbers, and the bytes of the output all depend on those details.
-
-**How it works.** `Alaya.Executor` reproduces them. Every executor runs the argv through the
-trampoline `exec /bin/sh -c "$@" 2>&1`, so the inner shell receives exactly mini's argv and its
-diagnostics are byte-identical; stderr is merged at the file-descriptor level; stdin is
-inherited; the inherited environment gets mini's overrides (`PAGER=cat`, `TQDM_DISABLE=1`, …);
-the child runs in its own session so a timeout kills the whole group; output is decoded with
-CPython's replacement rules. A failure to execute — a missing working directory, a spawn error, a
-timeout — is an `Output` with `exceptionInfo`, never an exception, because mini never lets an
-execution problem end a run.
-
-`execCommand` reproduces one more thing: what `Popen` does when `command` is not a string. A
-list is spliced into extra shell arguments, a dict contributes its keys, and anything else is
-the `TypeError` text CPython would raise, as an observation.
-
-Two executors implement this. `Executor.onHost` runs on the machine. `Executor.Docker.executor`
-starts one container per run, bind-mounts the working directory at `/workspace`, and runs each
-command with `docker exec`, using the image's `timeout(1)` when it has one and a host-side
-deadline as a backstop. What differs, and is the port's second deviation: mini's environment
-persists everything a command does, while a snapshot captures only the working directory, so an
-install into the image's filesystem lasts for the run and is gone when a branch is resumed later.
-
-## 6. The view
-
-**Problem.** The model must see mini's observation format, and no more than 10 000 characters of
-any output; the record must keep the whole output.
-
-**How it works.** `view` maps events one to one. A message passes through. A response becomes
-the assistant message it was, or, when it fails to parse, the format-error user turn. An
-observation, which the agent records as the JSON of `Output`, becomes the tool message with
-mini's envelope:
-
-```
-{
-  "returncode": 0,
-  "output": "…"
-}
+```lean
+def agent (executor : Executor) (config : Config) : Agent := {
+  identity := { agent := "mini-swe", step_limit, max_consecutive_format_errors, timeout_seconds }
+  tools := #[bashTool, submitTool]
+  view
+  next := next config
+  act := act executor }
 ```
 
-or, at 10 000 characters and above, `output_head` and `output_tail` of 5 000 characters each
-with `elided_chars` and a warning. The truncation happens here and only here. `alaya show HASH
---view` prints both the log and the view for a state, which is the quickest way to see the
-difference.
-
-*One mini turn: `parseActions` classifies the response, then pending actions run one at a time through the executor until a submit or a limit ends the run.*
-
-```mermaid
-flowchart TD
-    Start["response from the model"] --> Parse["parseActions"]
-    Parse -->|"no tool calls / unknown tool / bad arguments"| FmtErr["format error: view shows the error as a user turn; the response is dropped"]
-    FmtErr --> Limit["next: sample again, or done RepeatedFormatError after 3 in a row"]
-    Limit --> Start
-    Parse -->|"actions"| Next{"next: dispatch pending calls in order"}
-    Next -->|"submit"| Submit["done Submitted (message) - terminal, later calls never run"]
-    Next -->|"bash"| ExecCmd["execCommand: Popen semantics (string = script; list splices args; dict = keys; other = TypeError observation)"]
-    ExecCmd --> ExecIface["Executor.exec: exec /bin/sh -c #quot;$@#quot; 2>&1 trampoline, env overrides, setsid, timeout kills the group"]
-    ExecIface --> HostExec["host executor"]
-    ExecIface --> ContainerExec["container executor: bind-mounts workspace at /workspace"]
-    HostExec --> Output["Output: output (lossy UTF-8), returncode, exceptionInfo"]
-    ContainerExec --> Output
-    Output --> Obs["Event.observation (JSON of Output) - recorded whole"]
-    Obs --> View["view: mini's JSON envelope; >= 10000 chars becomes output_head/output_tail + elided_chars"]
-    View --> Next
-    Next -->|"no calls pending"| SampleAgain["next: sample (or done LimitsExceeded at the step limit)"]
-    SampleAgain --> Start
-```
-
-## 7. Control
-
-`next config log` is `DefaultAgent.run` and `query` as a function of the log:
-
-1. If the last response failed to parse: `done RepeatedFormatError` once the trailing run of
-   format errors reaches the limit, otherwise sample again.
-2. Otherwise take the last response's actions in order and find the first one no observation
-   has answered. A `submit` there ends the run with `Submitted` and the message as the
-   submission; a `bash` there is the next `act`. Calls after a `submit` in the same turn never
-   run, as calls after mini's sentinel never ran.
-3. When every action has been answered, sample — unless `stepLimit` is set and the log already
-   holds that many responses, in which case `done LimitsExceeded`. Mini checks the limit before
-   the model call, and so does this.
-
-`act` runs a `bash` call through the executor and returns `Output.toJson`. It is never asked to
-run `submit`: `next` ends the run first.
-
-## 8. Deviations, complete list
-
-- `submit` in place of the output sentinel, and the three sentences that name it.
-- Tool schemas are strict: the `bash` schema carries `"additionalProperties": false`, which
-  mini's does not.
-- The environment is a snapshot of the working directory, not a persistent machine.
-- The wire envelope always carries `tool_choice: auto`, `response_format: text`, and a
-  temperature, which mini leaves implicit; no model behaviour depends on them.
-- No litellm cost accounting, so `cost_limit` is not enforced.
-- Two rare messages embed a Python error string the port cannot reproduce: JSON parse errors in
-  tool arguments carry Lean's parser message, and spawn failures carry Lean's `IO.Error` text.
-- `ensure_ascii` escapes astral characters as surrogate pairs, as Python does; non-ASCII bytes
-  match.
-
-## 9. Configuration
+Two things are fixed when the agent is built. The **executor** is where its commands run — the
+host, or a container the trajectory pinned — and the **configuration** holds its limits:
 
 | Field | Default | Meaning |
 | --- | --- | --- |
-| `task` | — | the issue text in the instance prompt |
-| `stepLimit` | 0 | maximum model calls; 0 is no limit |
-| `maxConsecutiveFormatErrors` | 3 | format errors in a row before `RepeatedFormatError`; 0 is no limit |
-| `timeoutSeconds` | 30 | per-command wall-clock limit |
-| `env` | mini's five overrides | added to every command's environment |
+| `task` | — | the task text placed in the opening prompt |
+| `stepLimit` | 0 | model calls before the run ends with `LimitsExceeded`; 0 is no limit |
+| `maxConsecutiveFormatErrors` | 3 | malformed responses in a row before `RepeatedFormatError`; 0 is no limit |
+| `executor` | 30 s, mini's environment overrides | how each command is run (`Executor.Config`) |
 
-`Config.executor` is the part the executor needs; `agent executor workDir config` is the
-`Alaya.Agent.Agent`.
+The command line names the agent `--agent mini-swe`.
+
+## 2. The opening log
+
+`initialLog config uname` produces the two events a run starts from: the system message, and
+the instance message with the task and a line describing the machine — the `uname` of the
+executor, so a run pinned to an image is told about the image and not about the host. Both are
+mini's texts, rendered from its `mini.yaml`; the only change is the two sentences that named its
+submission sentinel, which name the `submit` tool. The opening log is frozen into the root state.
+
+## 3. Tools
+
+**`bash`** takes one string argument, `command`, a shell script. **`submit`** takes a string
+`message` and ends the run; the message becomes the run's submission. Both schemas are strict
+(every property required, no others). `submit` replaces mini's convention of ending a run when a
+command prints a sentinel line, which would require whoever runs the agent to read tool output;
+here the end of a run is a tool call, visible in the log's structure.
+
+## 4. Reading a response: `parseActions`
+
+Every response is read into either a list of **actions** or a **format error**:
+
+| The response… | Result |
+| --- | --- |
+| has no tool call | format error: "No tool calls found in the response…" |
+| has a call whose arguments are not JSON | format error: "Error parsing tool call arguments: …" |
+| has a call to an unknown tool | format error: "Unknown tool '…'." |
+| has a `bash` call without `command`, or with a non-string one | format error saying which |
+| otherwise | one `Action.bash id command` or `Action.submit id message` per call, in order |
+
+The first call with a problem decides; the whole turn is a format error. The message the model
+will see (`formatErrorMessage`) wraps the problem in mini's guidance on how to call the tool,
+ending with how to submit — except when the provider reports that it **cut the response off**
+(`finish_reason` is `length`, or `tool_calls` with no calls present): then the message says so
+and asks for a shorter response, because the model did nothing wrong that repeating the guidance
+would fix.
+
+## 5. The view
+
+`view` maps the log to the dialogue event by event.
+
+- A **message** passes through: the opening prompts, a person's notice.
+- A **response** that parsed becomes the assistant message it was, tool calls and reasoning
+  included. A response that did **not** parse is not shown at all; in its place the model sees a
+  **user** message carrying the format error. This is mini's protocol: the malformed turn is
+  dropped from the model's context and replaced by the correction, so the model does not see its
+  own broken output and try to continue it. The log still holds the response.
+- An **observation** — the `Output` the agent recorded, as JSON — becomes a tool message with
+  the JSON rendered as text: `output`, `exit_code` (null when the command did not complete), and
+  `error` when there is one. When `output` is `outputLimit` (10 000) characters or longer, the
+  model is shown `output_head` and `output_tail` of 5 000 characters each and `elided_chars`
+  instead. The record keeps the whole output.
+
+*Two turns of a log and their view: a malformed response is replaced, a long output is cut.*
+
+```mermaid
+flowchart LR
+  subgraph L["log"]
+    direction TB
+    L1["response: no tool call"]
+    L2["response: bash cat big.log"]
+    L3["observation: 12000 chars, exit 0"]
+    L1 --> L2 --> L3
+  end
+  subgraph V["view"]
+    direction TB
+    V1["user: Tool call error … (the response is not shown)"]
+    V2["assistant: bash cat big.log"]
+    V3["tool: output_head, output_tail, elided_chars 2000, exit_code 0"]
+    V1 --> V2 --> V3
+  end
+  L1 --> V1
+  L2 --> V2
+  L3 --> V3
+```
+
+## 6. Control and action: `next` and `act`
+
+`next config log` decides from the log alone:
+
+1. **After a malformed response.** If the trailing responses are `maxConsecutiveFormatErrors`
+   format errors in a row, `done RepeatedFormatError`; otherwise `sample` again — the view
+   will show the correction. A person's message between them does not break the run; an
+   observation does, since it means a turn ran.
+2. **After a response with actions.** The first action whose call no observation has answered
+   yet is next. A `submit` there is `done Submitted`, with its message as the submission; a
+   `bash` there is `act` on that call. Calls after a `submit` in the same response never run.
+3. **When every call is answered**, `sample` — unless `stepLimit` is set and the log already
+   holds that many responses, in which case `done LimitsExceeded`. The limit is checked before
+   the model call, as mini does.
+
+`act executor workspace call` runs the `bash` call's script in the workspace through the
+executor and returns the `Output` as JSON. It is never given a `submit`: `next` ends the run
+first.
+
+*One response, from the model to the next sample.*
+
+```mermaid
+flowchart TD
+  R["response"] --> P["parseActions"]
+  P -->|"format error"| F["view shows the correction as a user turn"]
+  F --> N1{"3 in a row?"}
+  N1 -->|yes| D1["done RepeatedFormatError"]
+  N1 -->|no| S["sample"]
+  P -->|"actions"| A{"first unanswered call"}
+  A -->|"submit"| D2["done Submitted"]
+  A -->|"bash"| X["act: run the script, record the Output"]
+  X --> A
+  A -->|"none left"| L{"step limit reached?"}
+  L -->|yes| D3["done LimitsExceeded"]
+  L -->|no| S
+```
+
+## 7. Running a command
+
+The executor (`Alaya.Executor`) runs a script through `/bin/sh` with stderr merged into stdout at
+the file-descriptor level, so the model sees output in the order a terminal would, in the
+workspace, with the inherited environment plus the configured overrides, in its own session so a
+timeout kills the whole process group. Output is decoded as UTF-8 with invalid bytes replaced.
+A command that cannot be run, or that is killed at the timeout, yields an `Output` with no exit
+code and an `error` saying why — never an exception, so a run does not die on a failed command.
+
+`Executor.onHost` runs on the machine; `Executor.Docker.executor` starts one container per run
+with the workspace bind-mounted and runs each command with `docker exec`. What a container run
+changes: only the workspace is snapshotted, so an install into the image's filesystem lasts for
+the run and is gone when a branch is resumed later.
+
+## 8. Differences from mini-SWE-agent
+
+- A run ends with the `submit` tool, not a sentinel line in a command's output; the two prompt
+  sentences and the last line of the format-error message say so.
+- Tool schemas are strict.
+- Observations are JSON values rendered by Lean, so non-ASCII text is not escaped and the fields
+  are `output`, `exit_code`, and `error`, rather than mini's `returncode` and `exception_info`.
+- A non-string `command` is a format error, not run the way Python's `Popen` would happen to run
+  a list or a dict.
+- A format error names one problem per call, rather than concatenating every problem found.
+- Invalid UTF-8 in output is replaced byte by byte, not by CPython's maximal-subpart rule.
+- Error texts are plain, not Python's exception messages.
+- The environment is a snapshot of the working directory, not a persistent machine.
+- No per-model cost accounting, so mini's `cost_limit` is not enforced.

@@ -2,11 +2,11 @@ import Test.Framework
 import Test.MiniFixtures
 import Alaya
 
-/-! Fidelity tests for the mini-SWE-agent port, and tests of the trajectory tree driven by it.
-Golden cases (`Test/MiniFixtures.lean`) are rendered by mini's own jinja templates, so equality
-here is byte-level agreement with upstream, except where the port deliberately names its
-`submit` tool in place of mini's output sentinel. End-to-end cases drive the real agent over a
-Cas-backed workspace with a scripted model. -/
+/-! Tests of the mini-SWE-agent port, and of the trajectory tree driven by it. The prompt
+fixtures (`Test/MiniFixtures.lean`) are rendered by mini's own jinja templates, so the prompts
+are checked against upstream to the byte, except where the port names its `submit` tool in place
+of mini's output sentinel. End-to-end cases drive the real agent over a Cas-backed workspace with
+a scripted model. -/
 
 namespace MiniTests
 
@@ -29,12 +29,17 @@ private def assertStringEq (label actual expected : String) : TestM Unit := do
     i := i + 1
   fail s!"{label}: differ at char {i}\n  actual  ({actual.length}): {repr (actual.toList.drop (i-min i 10) |>.take 40 |> String.ofList)}\n  expected({expected.length}): {repr (expected.toList.drop (i-min i 10) |>.take 40 |> String.ofList)}"
 
+/-- Mini's instruction for ending a run, as it appears twice in its instance prompt with two
+different continuation indents; the port names the `submit` tool there instead. -/
+private def miniSubmitInstruction (indent : String) : String :=
+  "Submit your changes and finish your work by issuing the following command: `echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT`.\n" ++
+  indent ++ "Do not combine it with any other command. <important>After this command, you cannot continue working on this task.</important>"
+
 /-- A fixture rendered by mini's templates, with the sentences that name the submission sentinel
 replaced by the port's, which name the `submit` tool. Everything else must match to the byte. -/
 private def portOf (miniText : String) : String :=
   let step1 := miniText.replace (miniSubmitInstruction "   ") (submitInstruction "   ")
-  let step2 := step1.replace (miniSubmitInstruction "  ") (submitInstruction "  ")
-  step2.replace miniEndHint endHint
+  step1.replace (miniSubmitInstruction "  ") (submitInstruction "  ")
 
 /-- A fixed `uname`, so prompts do not depend on the machine the tests run on. -/
 private def testUname : Uname :=
@@ -57,18 +62,43 @@ def goldenSuite : Suite := suite "mini.golden" #[
     check (!contains (instanceMessage "t" "Linux" "r" "v" "m") "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT")
       "the prompt does not",
 
-  test "observation rendering matches jinja" do
-    for case in MiniFixtures.observations do
-      assertStringEq s!"obs/{case.name}"
-        (observation { output := case.output, returncode := case.returncode,
-                       exceptionInfo := case.exceptionInfo })
-        case.expected,
+  iotest "an observation is the recorded output as JSON, cut when long" do
+    let field (json : Lean.Json) (key : String) : Option Lean.Json := (json.getObjVal? key).toOption
+    let short := observation { output := "hello\n", exitCode? := some 0 }
+    if field short "output" != some "hello\n" || field short "exit_code" != some 0 then
+      throw <| IO.userError s!"short observation: {short.compress}"
+    if (field short "error").isSome then throw <| IO.userError "no error field when nothing went wrong"
+    let failed := observation { output := "partial", error? := some "'sleep 30' timed out after 1 seconds" }
+    if field failed "exit_code" != some .null || (field failed "error").isNone then
+      throw <| IO.userError s!"failed observation: {failed.compress}"
+    -- Unicode passes through as text, not as escapes.
+    if field (observation { output := "café ✓ 😀", exitCode? := some 0 }) "output" != some "café ✓ 😀" then
+      throw <| IO.userError "unicode should be kept as is"
+    -- At the limit the output is replaced by its head and tail and a count of the elision.
+    let long := observation { output := String.ofList (List.replicate 12000 'z'), exitCode? := some 0 }
+    if (field long "output").isSome then throw <| IO.userError "long output must be cut"
+    if field long "elided_chars" != some 2000 then throw <| IO.userError s!"elided: {long.compress}"
+    match field long "output_head", field long "output_tail" with
+    | some (.str h), some (.str t) =>
+      if h.length != 5000 || t.length != 5000 then throw <| IO.userError "head and tail are 5000 each"
+    | _, _ => throw <| IO.userError "expected output_head and output_tail"
+    -- Just under the limit is shown whole.
+    let under := observation { output := String.ofList (List.replicate 9999 'z'), exitCode? := some 0 }
+    if (field under "output").isNone then throw <| IO.userError "9999 characters are shown whole",
 
-  test "format-error rendering matches jinja, with the submit tool in the closing hint" do
-    for case in MiniFixtures.formatErrors do
-      assertStringEq s!"fe/{case.name}"
-        (formatErrorMessage case.error case.hasToolCalls case.finishReason?)
-        (portOf case.expected)
+  iotest "a format error explains the problem, or the cut-off when the provider reports one" do
+    let plain := formatErrorMessage "Unknown tool 'python'." true (some "stop")
+    if !(contains plain "Unknown tool 'python'." && contains plain endHint) then
+      throw <| IO.userError s!"format error text: {plain}"
+    let cut := formatErrorMessage "irrelevant" false (some "length")
+    if !(contains cut "output token limit (finish_reason=length)") then
+      throw <| IO.userError "a length cut-off should be reported as such"
+    let cut2 := formatErrorMessage "irrelevant" false (some "tool_calls")
+    if !(contains cut2 "finish_reason=tool_calls") then
+      throw <| IO.userError "tool_calls with no call is a cut-off"
+    let notCut := formatErrorMessage "Unknown tool 'x'." true (some "tool_calls")
+    if contains notCut "output token limit" then
+      throw <| IO.userError "a response with calls was not cut off"
 ]
 
 /-! ## Parsing and the tool schema -/
@@ -83,7 +113,7 @@ private def responseWith (calls : Array Chat.ToolCall) (finish := "tool_calls") 
   { toolCalls := calls, finishReason? := some finish }
 
 private def actionSummary : Action -> String × String
-  | .bash id command => (id, command.compress)
+  | .bash id command => (id, command)
   | .submit id message => (id, "submit:" ++ message)
 
 def parseSuite : Suite := suite "mini.parse" #[
@@ -109,26 +139,23 @@ def parseSuite : Suite := suite "mini.parse" #[
 
   test "valid single and multiple calls parse in order" do
     match parseActions (responseWith #[call "a" "bash" "ls", call "b" "bash" "pwd"]) with
-    | .actions cs => assertEqual "actions" (cs.map actionSummary) #[("a", "\"ls\""), ("b", "\"pwd\"")]
+    | .actions cs => assertEqual "actions" (cs.map actionSummary) #[("a", "ls"), ("b", "pwd")]
     | .formatError _ => fail "expected actions",
 
   test "a submit call parses as a submit action carrying its message" do
     match parseActions (responseWith #[call "a" "bash" "ls", submitCall "s" "all done"]) with
     | .actions cs =>
-      assertEqual "actions" (cs.map actionSummary) #[("a", "\"ls\""), ("s", "submit:all done")]
+      assertEqual "actions" (cs.map actionSummary) #[("a", "ls"), ("s", "submit:all done")]
     | .formatError _ => fail "expected actions"
     match parseActions (responseWith #[{ id := "s", name := "submit", arguments := .mkObj [] }]) with
     | .actions cs => assertEqual "bare submit" (cs.map actionSummary) #[("s", "submit:")]
     | .formatError _ => fail "a submit without a message is still a submit",
 
   test "invalid arguments JSON is a recoverable format error" do
-    -- mini: json.loads fails, args read as {}, so the missing-command error joins the parse error.
     let bad : Chat.ToolCall := { id := "c1", name := "bash", arguments := .null,
                                  invalidArguments? := some "{\"command\": \"ls" }
     match parseActions (responseWith #[bad]) with
-    | .formatError msg =>
-      check (contains msg "Error parsing tool call arguments: ") "parse error text"
-      check (contains msg "Missing 'command' argument in bash tool call.") "missing-command joins it"
+    | .formatError msg => check (contains msg "Error parsing tool call arguments: ") "parse error text"
     | .actions _ => fail "expected a format error"
     -- when the provider reports a length cut-off, the truncation notice renders instead
     match parseActions { toolCalls := #[bad], finishReason? := some "length" } with
@@ -136,12 +163,12 @@ def parseSuite : Suite := suite "mini.parse" #[
       check (contains msg "output token limit (finish_reason=length)") "truncation notice"
     | .actions _ => fail "expected a format error",
 
-  test "a non-string command parses as an action carrying its JSON value" do
+  test "a non-string command is a format error" do
     let numeric : Chat.ToolCall :=
       { id := "c1", name := "bash", arguments := .mkObj [("command", (42 : Lean.Json))] }
     match parseActions (responseWith #[numeric]) with
-    | .actions cs => assertEqual "actions" (cs.map actionSummary) #[("c1", "42")]
-    | .formatError _ => fail "expected actions"
+    | .formatError msg => check (contains msg "must be a string") "the message says what is wrong"
+    | .actions _ => fail "expected a format error"
 ]
 
 /-! ## End-to-end runs of the agent on the host -/
@@ -189,7 +216,7 @@ def runSuite : Suite := suite "mini.run" #[
     | some (Chat.Message.tool "c1" content) =>
       assertStringEq "observation content"
         (match content with | .str s => s | j => j.compress)
-        (observation { output := "", returncode := 0 })
+        (observation { output := "", exitCode? := some 0 }).pretty
     | _ => fail "expected a tool observation at index 3"
     -- The live workspace and the snapshot both reflect the edit.
     assertEqual "workspace file" (← IO.FS.readFile ((← scratch) / "work" / "a.txt")) "hello\n"
@@ -242,14 +269,14 @@ def runSuite : Suite := suite "mini.run" #[
     assertEqual "exit status" outcome.status "LimitsExceeded",
 
   test "a command timeout is reported as an exception observation" do
-    let (dialogue, _, _) ← runAgent { task := "t", timeoutSeconds := 1 } #[
+    let (dialogue, _, _) ← runAgent { task := "t", executor := { defaultExecutor with timeoutSeconds := 1 } } #[
       responseWith #[call "c1" "bash" "sleep 30"],
       responseWith #[submitCall "c2"]]
     match dialogue[3]? with
     | some (Chat.Message.tool "c1" content) =>
       let s := match content with | .str s => s | j => j.compress
-      check (contains s "timed out after 1 seconds") "timeout exception surfaced"
-      check (contains s "\"returncode\": -1") "timeout returncode is -1"
+      check (contains s "timed out after 1 seconds") "the timeout is reported as the error"
+      check (contains s "\"exit_code\": null") "a timed-out command has no exit code"
     | _ => fail "expected a timeout observation",
 
   test "truncated tool arguments recover as a format error, like mini" do
@@ -273,29 +300,24 @@ def runSuite : Suite := suite "mini.run" #[
       responseWith #[submitCall "c2"]]
     match dialogue[3]? with
     | some (Chat.Message.tool "c1" (.str shown)) =>
-      check (contains shown "\"elided_chars\": 2000") "the model sees the elision"
+      match Lean.Json.parse shown with
+      | .ok json => assertEqual "elided" (json.getObjVal? "elided_chars" >>= Lean.Json.getNat?).toOption (some 2000)
+      | .error e => fail s!"the observation should be JSON: {e}"
       check (shown.length < 11000) "the model is shown about 10000 characters"
     | _ => fail "expected the truncated observation"
 ]
 
 /-! ## Command execution fidelity -/
 
-private def hostExecutor : Executor := Executor.onHost ({ task := "t" } : Config).executor
+private def hostExecutor : Executor := Executor.onHost defaultExecutor
 
 def execSuite : Suite := suite "mini.exec" #[
-  iotest "lossy UTF-8 decoding matches CPython errors='replace'" do
-    -- Expectations produced by CPython's bytes.decode('utf-8', errors='replace').
+  iotest "invalid UTF-8 bytes are replaced and valid text survives" do
     let cases : Array (List UInt8 × String) := #[
       ([0xff], "�"),
-      ([0xff, 0xfe], "��"),
-      ([0xe2, 0x82], "�"),
       ([0xe2, 0x82, 0xac, 0x58], "€X"),
-      ([0xe2, 0x41], "�A"),
-      ([0xf0, 0x80], "��"),
-      ([0xed, 0xa0, 0x80], "���"),
-      ([0xc0, 0xaf], "��"),
       ([0x61, 0xc2], "a�"),
-      ([0xf4, 0x90, 0x80, 0x80], "����"),
+      ([0xe2, 0x82], "��"),
       ([0xf0, 0x9f, 0x98, 0x80], "😀")]
     for (bytes, expected) in cases do
       let actual := Executor.lossyDecodeUtf8 ⟨bytes.toArray⟩
@@ -305,44 +327,28 @@ def execSuite : Suite := suite "mini.exec" #[
   test "stderr is merged into stdout at the fd level" do
     let out ← hostExecutor.bash (← workDir) "echo hi >&2"
     assertEqual "merged output" out.output "hi\n"
-    assertEqual "returncode" out.returncode 0,
+    assertEqual "exit code" out.exitCode? (some 0),
 
-  test "shell errors match mini's invocation byte-for-byte" do
-    -- mini execs ["/bin/sh", "-c", command] with stderr on the stdout fd; for commands whose
-    -- output is all on one stream, capturing the streams separately and concatenating is exact.
+  test "shell diagnostics are the shell's own, with stderr merged" do
+    -- The inner shell sees the script as `$1`, so its messages are what `/bin/sh -c` prints; for
+    -- commands whose output is all on one stream, concatenating the streams is exact.
     let work ← workDir
     for command in ["fi", "echo \"unterminated", "nosuchcmd_alaya_test"] do
       let out ← hostExecutor.bash work command
       let reference ← IO.Process.output { cmd := "/bin/sh", args := #["-c", command] }
       assertEqual s!"output of {repr command}" out.output (reference.stdout ++ reference.stderr)
-      assertEqual s!"returncode of {repr command}" out.returncode (Int.ofNat reference.exitCode.toNat),
+      assertEqual s!"exit code of {repr command}" out.exitCode? (some reference.exitCode),
 
   test "non-UTF-8 command output is replaced, not dropped" do
     let out ← hostExecutor.bash (← workDir) "printf 'a\\377b'"
     assertEqual "replaced output" out.output "a�b"
-    assertEqual "returncode" out.returncode 0,
+    assertEqual "exit code" out.exitCode? (some 0),
 
-  test "a spawn failure is an exception observation, not an aborted run" do
+  test "a command that cannot run is an error observation, not an aborted run" do
     let missing := (← scratch) / "missing"
     let out ← hostExecutor.bash missing "echo hi"
-    assertEqual "returncode" out.returncode (-1)
-    assertEqual "exception" out.exceptionInfo
-      s!"An error occurred while executing the command: [Errno 2] No such file or directory: '{missing}'",
-
-  test "non-string commands reproduce Popen's behavior" do
-    let work ← workDir
-    -- scalars: CPython's TypeError from list(command)
-    let intCase ← execCommand hostExecutor work (42 : Lean.Json)
-    assertEqual "int returncode" intCase.returncode (-1)
-    assertEqual "int exception" intCase.exceptionInfo
-      "An error occurred while executing the command: 'int' object is not iterable"
-    let noneCase ← execCommand hostExecutor work .null
-    assertEqual "null exception" noneCase.exceptionInfo
-      "An error occurred while executing the command: 'NoneType' object is not iterable"
-    -- a list splices into shell arguments: ["echo", "hi"] runs `echo` with $0=hi
-    let listCase ← execCommand hostExecutor work (.arr #[("echo" : Lean.Json), ("hi" : Lean.Json)])
-    assertEqual "list output" listCase.output "\n"
-    assertEqual "list returncode" listCase.returncode 0
+    assertEqual "no exit code" out.exitCode? none
+    check (((out.error?.getD "").splitOn missing.toString).length > 1) "the error names the directory"
 ]
 
 /-! ## The trajectory tree, driven by the mini agent -/
