@@ -15,15 +15,11 @@ structure Config where
   requestTimeoutMs : Nat := 600000
   /-- Abort connection establishment after this many milliseconds. -/
   connectTimeoutMs : Nat := 30000
-  /-- Send `reasoning_content: ""` on every assistant message that has none. DeepSeek's thinking
-  mode rejects a tool-calling history whose assistant turns lack the field — including turns
-  another model wrote — and accepts the empty string; other providers reject the unknown field,
-  so this is opt-in. -/
+  /-- Give every assistant message a `reasoning_content`, empty where none was recorded, as
+  DeepSeek's thinking mode requires; other providers reject the field, so this is opt-in. -/
   echoReasoning : Bool := false
-  /-- With `echoReasoning`, how many of the most recent assistant turns keep their recorded
-  `reasoning_content` on the wire; older turns send the empty string. A thinking trace runs to
-  tens of kilobytes per turn, and echoing every one made a twenty-turn context exceed half a
-  megabyte and time out. The dialogue itself keeps every trace; this only shapes the request. -/
+  /-- With `echoReasoning`, how many of the most recent assistant turns send their recorded
+  trace; older turns send the empty string, since traces are large. -/
   reasoningWindow : Nat := 2
 
 private def validateResponses (config : Config) (request : Chat.Request)

@@ -7,18 +7,15 @@ structure ToolCall where
   id : String
   name : String
   arguments : Lean.Json
-  /-- The raw `arguments` string when it was not valid JSON (e.g. a call truncated by the
-  output-token limit); `arguments` is then `.null`. Models do emit these, so they are a fact of
-  the protocol, not a provider failure — agents surface them as format errors. -/
+  /-- The raw `arguments` string when it was not valid JSON; `arguments` is then `.null`. -/
   invalidArguments? : Option String := none
   deriving Inhabited
 
 inductive Message where
   | system (content : String)
   | user (content : String)
-  /-- `reasoning?` is the provider's `reasoning_content` (DeepSeek's thinking-mode trace).
-  It is part of the model's memory: DeepSeek requires it echoed back on every assistant turn
-  of a tool-calling exchange, so it is carried in the dialogue and sent when present. -/
+  /-- The provider's `reasoning_content`, carried so it can be echoed back when a provider
+  requires it. -/
   | assistant (content? : Option String := none) (toolCalls : Array ToolCall := #[])
       (reasoning? : Option String := none)
   | tool (callId : String) (content : Lean.Json)
@@ -167,8 +164,7 @@ structure Response where
   content? : Option String := none
   toolCalls : Array ToolCall := #[]
   usage? : Option TokenUsage := none
-  /-- The provider's `finish_reason` for this choice (e.g. "stop", "tool_calls", "length"),
-  when reported. Some control flows distinguish a truncated response from a formatting error. -/
+  /-- The provider's `finish_reason` for this choice, when reported. -/
   finishReason? : Option String := none
   /-- The provider's `reasoning_content`, when it reports one (see `Message.assistant`). -/
   reasoning? : Option String := none

@@ -5,10 +5,8 @@ import Alaya.Provider.XMCP
 import Alaya.Provider.Yunwu
 import Alaya.Provider.Dgx
 
-/-!
-The provider table: one place that turns a `PROVIDER:NAME` spec from a command line into a bare
-provider model, so every executable understands the same set of providers and the same flags.
--/
+/-! The provider table: turns a `PROVIDER:NAME` spec from the command line into a bare provider
+model. -/
 
 namespace Alaya.Provider
 
@@ -19,13 +17,11 @@ def names : Array String := #["yunwu", "closeai", "xmcp", "dgx"]
 structure Options where
   /-- Endpoint for `dgx`; `none` keeps the built-in address and honours `DGX_BASE_URL`. -/
   dgxEndpoint? : Option Dgx.Endpoint := none
-  /-- `--echo-reasoning`: send an empty `reasoning_content` on assistant turns that have none,
-  which DeepSeek's thinking mode demands of a tool-calling history. -/
+  /-- `--echo-reasoning`; see `ChatCompletions.Config.echoReasoning`. -/
   echoReasoning : Bool := false
   deriving Repr, Inhabited
 
-/-- Reads `--url` and `--port`, which address the DGX Spark. `--port` alone changes the port of
-the default host; given both, `--port` wins over any port inside `--url`. -/
+/-- Reads `--url` and `--port`, which address the DGX Spark. -/
 def Options.ofArgs (args : Cli.Args) : Result Options := do
   let fromUrl ← match args.get? "url" with
     | none => pure none

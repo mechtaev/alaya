@@ -9,7 +9,7 @@ Moving real directories in and out of the store.
 re-capture, hashing fans out over dedicated threads, ignore rules prune the walk, and symlinks
 and executable bits are recorded as first-class entry types. `materialize` writes a snapshot
 back out, diffing against the destination's previous checkout so only changed paths are
-touched, with content delivered by copy, hardlink, or (APFS/reflink) clone.
+touched, with content delivered by copy or (APFS/reflink) clone.
 -/
 
 namespace Alaya.Cas

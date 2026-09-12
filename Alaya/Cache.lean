@@ -58,7 +58,6 @@ private def responseFromJson (json : Lean.Json) : Except String Chat.Response :=
     pure { id, name, arguments, invalidArguments? }
   let usage? := usageFromJson? json
   let finishReason? := (json.getObjVal? "finish_reason" >>= Lean.Json.getStr?).toOption
-  -- Absent in entries written before it was recorded, which is exactly `none`.
   let reasoning? := (json.getObjVal? "reasoning_content" >>= Lean.Json.getStr?).toOption
   pure { content?, toolCalls, usage?, finishReason?, reasoning? }
 

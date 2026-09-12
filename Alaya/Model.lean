@@ -8,9 +8,8 @@ namespace Alaya
 /-- The draws a request names, in order. `next` is the next one; `nextN` draws several. -/
 structure Model.Stream where
   next : Result Chat.Response
-  /-- A layer's own way to draw several at once, when it has one better than repeating `next`:
-  the provider sends `n` in one request, the concurrent batcher fans out. Set through
-  `Stream.withNative`; read only by `nextN`, which falls back to `next` otherwise. -/
+  /-- A layer's own way to draw several at once, when it has one. Set through
+  `Stream.withNative`; read only by `nextN`. -/
   private nativeNextN? : Option (Nat -> Result (Array Chat.Response)) := none
 
 namespace Model.Stream
@@ -41,9 +40,8 @@ end Model.Stream
 
 inductive BatchSampling where
   | native
-  /-- Every request in flight at once, optionally bounded to `maxInFlight?` concurrent provider
-  requests so fan-out and concurrent callers cannot saturate a provider into rate limiting
-  (HTTP 429). The bound is shared by all streams of the adapted model. -/
+  /-- Every request in flight at once, bounded to `maxInFlight?` by a semaphore shared by all
+  streams of the adapted model. -/
   | concurrent (maxInFlight? : Option Nat := none)
   | sequential
   deriving Repr, Inhabited

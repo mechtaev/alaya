@@ -1,20 +1,8 @@
 import Lean.Data.Json
 import Alaya.Error
 
-/-!
-Where shell commands run: on the host, or (see `Alaya.Executor.Docker`) in a container with the
-working directory bind-mounted. An `Executor` is what a shell-using agent acts through and what
-a trajectory runs its evaluations with; it changes where a command runs and nothing about what
-the command sees.
-
-A command is a shell script. It runs through the trampoline `exec /bin/sh -c "$@" 2>&1`, so the
-inner shell receives the script as its own argument and stderr is merged into stdout at the
-file-descriptor level — the model sees output in the order a terminal would show it. The child
-gets the inherited environment plus overrides, runs in its own session so that a timeout kills
-the whole process group, and its output is decoded as UTF-8 with invalid bytes replaced. A
-failure to execute — a missing directory, a spawn error, a timeout — is an `Output` with
-`error?`, never an exception, because a run must not die on a failed command.
--/
+/-! Where shell commands run: on the host, or (see `Alaya.Executor.Docker`) in a container with
+the working directory bind-mounted. The command semantics are described in `docs/miniswe.md` §7. -/
 
 namespace Alaya
 
@@ -47,8 +35,7 @@ def fromJson? (json : Lean.Json) : Option Output := do
 
 end Output
 
-/-- The `uname` fields of the machine commands run on. A prompt that describes the machine has
-to read them from the executor, not the host: a container is another operating system. -/
+/-- The `uname` fields of the machine commands run on. -/
 structure Uname where
   system : String
   release : String
@@ -82,8 +69,7 @@ structure Executor where
 
 namespace Executor
 
-/-- Decodes UTF-8, replacing each byte that does not start a valid character with U+FFFD, so a
-command's output is always a string and no run dies on stray bytes. -/
+/-- Decodes UTF-8, replacing each byte that does not start a valid character with U+FFFD. -/
 def lossyDecodeUtf8 (bytes : ByteArray) : String := Id.run do
   let mut out := ""
   let mut i := 0
@@ -134,8 +120,7 @@ def Uname.local : IO Uname := do
 
 namespace Executor
 
-/-- Runs commands on the host: in the working directory, with the inherited environment plus
-overrides, stdin inherited, in a fresh session so a timeout kills the whole process group. -/
+/-- Runs commands on the host. -/
 def onHost (config : Config) : Executor where
   uname := Uname.local
   exec := fun workDir argv display => do

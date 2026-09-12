@@ -1,45 +1,29 @@
 import Alaya.Model
 
-/-!
-The agent API: the smallest set of operations a trajectory needs from an agent, independent of
-any provider, tool set, or environment. See `docs/agent-api.md`.
-
-An agent interacts with a stochastic **model** and an effectful **environment**. Everything it
-does is recorded in a **log** of events — what was said to it, what it answered, what its tools
-returned — exactly as it happened. The model never sees the log directly: a pure **view**
-projects the log onto the dialogue the next sample is conditioned on. Keeping the two apart is
-what lets a tool's output be recorded whole while the model is shown a truncation of it, and
-lets the projection change without losing the record.
-
-Concrete agents (see `Alaya.Agent.MiniSwe`) supply the four operations of `Agent`; the
-trajectory (`Alaya.Trajectory`) drives them and persists the log.
--/
+/-! The agent API: the log of events, the view of it the model is sent, and the operations a
+trajectory drives an agent with. See `docs/agent-api.md`. -/
 
 namespace Alaya.Agent
 
 open Alaya (Result)
 
-/-- The exact context a sample is conditioned on: the output of a view. -/
+/-- The context a sample is conditioned on: the output of a view. -/
 abbrev Dialogue := Array Chat.Message
 
 /-- One thing that happened, recorded verbatim. -/
 inductive Event where
-  /-- Text placed in the context by something other than the model or a tool: the prompts that
-  open a run, or a person's message. A view passes it through unchanged. -/
+  /-- Text placed in the context by something other than the model or a tool. -/
   | message (message : Chat.Message)
-  /-- The model's turn, whether or not it parsed. Kept whole, so usage, finish reason, and a
-  reasoning trace survive, and so a view can decide how a malformed turn is shown. -/
+  /-- The model's turn, whether or not it parsed. -/
   | response (response : Chat.Response)
-  /-- One tool call's result, as the agent's `act` produced it. Its shape is the agent's to
-  define; the trajectory stores it and the view renders it. -/
+  /-- One tool call's result, in whatever shape the agent's `act` produced. -/
   | observation (callId : String) (content : Lean.Json)
   deriving Inhabited
 
-/-- The agent's memory: everything that happened, in order. -/
+/-- Everything that happened, in order. -/
 abbrev Log := Array Event
 
-/-- A deterministic, total projection of the log onto the model's context. The invariant every
-driver keeps: the response at log position `k` was sampled from `view (log.take k)`. -/
+/-- A pure, total projection of the log onto the model's context. -/
 abbrev View := Log -> Dialogue
 
 /-- Why a run stopped, and what it produced. -/
@@ -52,33 +36,23 @@ structure Outcome where
 
 /-- What the loop should do next, decided from the log alone. -/
 inductive Directive where
-  /-- Draw the next response, conditioned on `view log`. -/
   | sample
-  /-- Run one tool call; its result becomes an observation. -/
   | act (call : Chat.ToolCall)
-  /-- Ask a person `question` and wait: the run stops here, and their answer is recorded as
-  the observation of the call `callId` that asked. -/
+  /-- Stop and wait for a person; their answer is recorded as the observation of `callId`. -/
   | ask (callId : String) (question : String)
-  /-- The run is over. -/
   | done (outcome : Outcome)
   deriving Inhabited
 
-/-- The directory an agent's tools act in. A trajectory fills it from a state's snapshot before
-a turn and snapshots it again after each `act`; the path is never recorded. -/
+/-- The directory an agent's tools act in. -/
 structure Workspace where
   dir : System.FilePath
   deriving Inhabited
 
-/-- An agent, as the four things a driver needs from it. -/
 structure Agent where
-  /-- Names the agent and the configuration that shapes its view and control flow, for
-  provenance. -/
+  /-- The agent and its configuration, for provenance. -/
   identity : Lean.Json
-  /-- The tools offered to the model with every sample. -/
   tools : Array Chat.ToolDefinition
-  /-- How the log is shown to the model. Pure and total. -/
   view : View
-  /-- What to do next. Pure and total: everything it needs is in the log. -/
   next : Log -> Directive
   /-- Runs one tool call in the workspace and returns the observation to record. -/
   act : Workspace -> Chat.ToolCall -> Result Lean.Json
@@ -130,9 +104,8 @@ inductive Stop where
   | question (callId : String) (question : String)
   deriving Inhabited
 
-/-- The reference loop: follows the agent's directives until it stops, sampling from `view log`
-and recording every event. A trajectory drives the same steps but persists each turn as a
-state; this loop is the specification they agree on, and what a test runs an agent with. -/
+/-- The reference loop: follows the agent's directives until it stops, recording every event.
+A trajectory drives the same steps but persists each turn as a state. -/
 partial def run (agent : Agent) (workspace : Workspace) (sample : Dialogue -> Result Chat.Response)
     (log : Log) : Result (Log × Stop) := do
   match agent.next log with

@@ -1,5 +1,3 @@
--- This module serves as the root of the `Alaya` library.
--- Import modules here that should be built as part of the library.
 import Alaya.Error
 import Alaya.Retry
 import Alaya.Model

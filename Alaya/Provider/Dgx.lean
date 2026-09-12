@@ -15,9 +15,7 @@ structure Endpoint where
 def Endpoint.baseUrl (endpoint : Endpoint) : String :=
   s!"{endpoint.scheme}://{endpoint.host}:{endpoint.port}{endpoint.path}"
 
-/-- Reads an endpoint given as a URL, layering whatever it specifies onto the defaults. All of
-`http://host:9000/v1`, `host:9000`, and `host` are accepted; a missing scheme is `http`, a
-missing port is `8000`, and a missing path is `/v1`. -/
+/-- Reads an endpoint given as a URL, layering whatever it specifies onto the defaults. -/
 def Endpoint.ofUrl (url : String) : Except String Endpoint := do
   let trimmed := url.trimAscii.toString
   if trimmed.isEmpty then throw "empty URL"
@@ -42,11 +40,8 @@ def Endpoint.ofUrl (url : String) : Except String Endpoint := do
     | none => throw s!"'{port}' is not a port number"
   | _ => throw s!"cannot read '{url}' as [scheme://]host[:port][/path]"
 
-/-- An OpenAI-compatible model served by a DGX Spark.
-
-`endpoint?` pins the address explicitly — that is what `--url` and `--port` set. Left `none`,
-the address is `http://10.42.0.1:8000/v1`, overridable with `DGX_BASE_URL`. Local servers
-usually need no credential, so `DGX_API_KEY` defaults to `EMPTY` (the vLLM convention). -/
+/-- An OpenAI-compatible model served by a DGX Spark. `endpoint?` pins the address; left `none`,
+the default is used, overridable with `DGX_BASE_URL`. -/
 def model (name : String) (temperature : Float)
     (endpoint? : Option Endpoint := none)
     (canonicalModelName? : Option String := none)

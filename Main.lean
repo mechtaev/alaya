@@ -13,9 +13,7 @@ private def emit (s : String) : Result Unit := Result.fromIO Error.storage (IO.p
 private def emitLines (lines : Array String) : Result Unit :=
   lines.forM emit
 
-/-- The data directory: everything one set of runs needs, namely the content-addressed store
-under `path/store`, the model cache under `path/cache`, and the agent's work directory under
-`path/work`. Selected by `--data` (default `.alaya`), the only directory flag there is. -/
+/-- The data directory (`--data`, default `.alaya`); its layout is in `docs/trajectory-schema.md` §5. -/
 private structure DataDir where
   path : System.FilePath
   store : Store
@@ -27,11 +25,8 @@ private def openData (args : Cli.Args) : Result DataDir := do
   let store ← Store.create (path / "store")
   pure { path, store }
 
-/-- The work directory: where the agent runs its commands, and nothing else. It is always
-`DATA/work`, and it is the one place in the data directory that holds nothing durable — every
-checkout wipes it and re-materializes it from a snapshot, so whatever is in it that was not
-captured into the store is lost. Not configurable, so no path a user names can be destroyed by
-a checkout, and the store and the cache are out of its reach by construction. -/
+/-- The work directory, always `DATA/work`: not configurable, so no path a user names can be
+destroyed by a checkout, and the store and the cache are out of its reach by construction. -/
 private structure WorkDir where
   path : System.FilePath
 
@@ -40,9 +35,8 @@ private def openWork (data : DataDir) : Result WorkDir := do
   Result.fromIO Error.storage (IO.FS.createDirAll path)
   pure { path }
 
-/-- Where a run's commands go. A trajectory records the image its earlier turns ran in — and its
-root dialogue tells the model the `uname` of that image — so a continuation is pinned to it: the
-recorded image is used as given, and a `--image` that resolves to anything else is refused. -/
+/-- Where a run's commands go: the host, or the image the trajectory recorded, which a
+`--image` that resolves to anything else must not override. -/
 private def executorFor (args : Cli.Args) (image? : Option String) (config : Executor.Config) :
     Result Executor := do
   match image? with
@@ -64,9 +58,7 @@ private def executorFor (args : Cli.Args) (image? : Option String) (config : Exe
           "a continuation has to run the same bits its earlier turns did"
     Executor.Docker.executor settings config
 
-/-- An agent the command line can name with `--agent`: how to open its run, how to build it over
-an executor, and how it shows a log. There will be more of these; the trajectory is the same for
-all of them. -/
+/-- An agent the command line can name with `--agent`. -/
 private structure AgentSpec where
   name : String
   /-- The opening log of a run for a task, on a machine described by `uname`. -/
@@ -147,13 +139,11 @@ private def rootProject (args : Cli.Args) (data : DataDir)
 
 private def modelSpecOf (args : Cli.Args) : String := args.getD "model" ""
 
-/-- Exit status when a run stopped at a question rather than an outcome, so a supervisor driving
-`alaya` as a subprocess can tell the two apart without parsing anything. -/
+/-- Exit status when a run stopped at a question rather than an outcome. -/
 private def exitWaiting : UInt32 := 3
 
-/-- One line per new state. Plain: the hash, with the outcome or the question it stopped at.
-`--json`: one object with `state`, `kind`, `outcome`, and `question`, the last of which a
-supervisor reads to know what it is being asked. -/
+/-- One line per new state: the hash with the outcome or the question it stopped at, or one
+JSON object with `--json`. -/
 private def stateLine (data : DataDir) (child : Hash) (json : Bool) : Result Unit := do
   let state ← getState data.store child
   if json then
@@ -230,8 +220,6 @@ private def dispatch (argv : List String) : Result UInt32 := do
     let grader ← args.require "grader"
       "e.g. --grader 'cp -R ./hidden-tests/. {checkout}/ && pytest -q'"
     let timeout ← args.natD "timeout" 900
-    -- The checkout and the grader's output directory live under DATA/eval, beside the work
-    -- directory and as disposable: a fresh evaluation empties them first.
     let node ← evaluate data.store (data.path / "eval") target grader timeout (args.isSet "force")
     match (← getState data.store node).evaluation? with
     | some e =>

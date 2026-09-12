@@ -35,14 +35,7 @@ private def rateLimited : Error -> Bool
   | .http 429 _ _ => true
   | _ => false
 
-/-- Determines whether retrying is safe and likely useful.
-
-Retry known transient HTTP statuses. Transport failures are opt-in because the server may have
-received and processed the request before the connection failed. Structured-output validation
-failures are also opt-in: another sample can satisfy the schema, but a bad schema or prompt will
-fail repeatedly. Malformed-response failures are opt-in for the same reason: a truncated or garbled
-body may parse on a retry, but a genuine protocol mismatch will not. Configuration, provider, cache,
-and cancellation failures are terminal. -/
+/-- Whether retrying is safe and likely useful; see `docs/llm-api.md` §3 for the policy. -/
 private def retryable (config : Config) : Error -> Bool
   | .http status _ _ => status == 408 || status == 409 || status == 425 || status == 429 ||
       (500 <= status && status < 600)

@@ -42,7 +42,7 @@ flowchart LR
   E1["1 message<br/>system: You can run bash."]
   E2["2 message<br/>user: List the files."]
   E3["3 response<br/>Listing. + call c1: bash ls"]
-  E4["4 observation c1<br/>{output: a.txt\nb.txt\n, returncode: 0}"]
+  E4["4 observation c1<br/>{output: a.txt\nb.txt\n, exit_code: 0}"]
   E5["5 response<br/>call c2: submit"]
   E1 --> E2 --> E3 --> E4 --> E5
 ```
@@ -52,7 +52,7 @@ let log : Log := #[
   .message (.system "You can run bash."),
   .message (.user "List the files."),
   .response { content? := some "Listing.", toolCalls := #[{ id := "c1", name := "bash", arguments := .mkObj [("command", "ls")] }] },
-  .observation "c1" (.mkObj [("output", "a.txt\nb.txt\n"), ("returncode", 0)]),
+  .observation "c1" (.mkObj [("output", "a.txt\nb.txt\n"), ("exit_code", 0)]),
   .response { toolCalls := #[{ id := "c2", name := "submit", arguments := .mkObj [("message", "done")] }] }]
 
 log.responses        -- 2
@@ -89,7 +89,7 @@ flowchart LR
     L1["Event.message (system prompt)"]
     L2["Event.message (user: the task)"]
     L3["Event.response (assistant text + bash 'cat big.log')"]
-    L4["Event.observation (c1: output 12000 chars, returncode 0) - recorded whole"]
+    L4["Event.observation (c1: output 12000 chars, exit code 0) - recorded whole"]
     L5["Event.response (no tool call: a format error)"]
     L6["Event.message (user: a person's intervention notice)"]
     L7["Event.response (assistant + bash 'pytest')"]

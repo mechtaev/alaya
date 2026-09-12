@@ -1,22 +1,14 @@
 import Alaya.Trajectory
 
 /-!
-A standalone HTML report of a whole trajectory forest.
-
-Everything a data directory holds — the tree, each state's metadata, the events it appended, the
-workspace changes it made, and any verdict recorded against it — is serialized into one
-self-contained file: the data as JSON in a `<script>` tag, with the page that renders it. No
-network, no assets, so a report can be mailed, archived, or opened from a container.
-
-The page shows two things side by side and keeps them apart, as the agent API does: each
-state's *events* — what happened, as recorded — and, on request, the *view* — the exact context
-the model is sent from that state, produced by the agent's view function. The report depends on
-the agent for nothing else: it takes the view and the tool list, and renders everything by its
-generic shape.
+A standalone HTML report of a whole trajectory forest: the data as JSON in a `<script>` tag,
+with the page that renders it, so a report can be mailed or archived. Each state shows its
+events as recorded and, on request, the view — the context the model is sent from it — which is
+all the report takes from the agent besides its tool list.
 
 Workspace changes carry the text of the files they touch when that is cheap (small, textual, and
-not obviously machine-generated), so the report can show a line diff rather than just a list of
-paths. The limits below keep a report from growing with an agent's virtual environment.
+not obviously machine-generated), so the report can show a line diff. The limits below keep a
+report from growing with an agent's virtual environment.
 -/
 
 namespace Alaya.Trajectory.Html

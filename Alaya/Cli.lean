@@ -10,8 +10,8 @@ occurrences rather than a map, so a flag may be repeated and every value survive
 is.
 
 A `--flag` that is last on the line, or followed by another `--flag`, is a *switch*: it is
-recorded with an empty value, so `--concurrent` and `--concurrent 4` are both accepted. The
-price of that rule is that a flag value may not itself begin with `--`.
+recorded with an empty value, so `--force` needs no value. The price of that rule is that a flag
+value may not itself begin with `--`.
 -/
 
 namespace Alaya.Cli

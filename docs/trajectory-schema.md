@@ -433,7 +433,7 @@ The data directory (`--data D`, default `.alaya`) holds everything one set of ru
 
 | Path | Contents |
 | --- | --- |
-| `D/store/blobs/<2 hex>/<64 hex>` | every object, addressed by the SHA-256 of its bytes: state objects, tree objects, file contents, link targets, test patches |
+| `D/store/blobs/<2 hex>/<64 hex>` | every object, addressed by the SHA-256 of its bytes: state objects, tree objects, file contents, link targets |
 | `D/store/refs/state.<hex>` | pins a state object; the set of these *is* the forest |
 | `D/store/refs/workspace.<hex>` | pins a tree a state refers to — a workspace, or an evaluation's evidence — so `gc` keeps it |
 | `D/store/cache/`, `D/store/checkouts/` | the snapshot stat cache and the record of what was last materialized where; performance only |

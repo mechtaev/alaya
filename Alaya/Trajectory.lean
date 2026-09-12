@@ -4,30 +4,8 @@ import Alaya.Cache
 import Alaya.Provider
 import Alaya.Executor
 
-/-!
-A content-addressed **trajectory tree** over any `Alaya.Agent.Agent`, and the operations a CLI
-drives it with. See `docs/trajectory-schema.md` for the on-disk format.
-
-Every agent state is a `Log × Cas.Hash`: the events so far and the workspace snapshot. We
-persist each state as a `State` object in the same `Cas.Store`, addressed by its own content
-hash — so a state is a node whose parent edge, appended events, and workspace are all captured
-by one immutable, deduplicating value, exactly like a git commit. A trajectory is therefore a
-tree of these nodes; there are no run names or refs in the user's model — states are addressed
-by their hashes, copied from `tree`.
-
-The tree is append-only. Growing a continuation from a node (`resume`/`step`) always creates a
-*new* child: at a node that already has `n` turn children, sampling asks the persistent cache for
-draw index `n`, past the recorded draws, so it replays existing branches deterministically and
-can never collide with a sibling. Children a person makes — an `intervention` (`commit`), a
-`message` (`tell`), a `reply` — and evaluations do not count as draws.
-
-The trajectory knows nothing about what an agent's tools are or what its observations mean. It
-stores events as the agent produced them and shows the model whatever the agent's `view` makes of
-them; every rendering here is generic.
-
-Liveness is tracked with the store's refs (`state.<hex>` for each node, `workspace.<hex>` for each
-workspace it points at); `rm` prunes a subtree by rewriting those refs and running `Store.gc`.
--/
+/-! A content-addressed trajectory tree over any `Alaya.Agent.Agent`, and the operations the
+command line drives it with. See `docs/trajectory-schema.md`. -/
 
 namespace Alaya.Trajectory
 
@@ -35,11 +13,7 @@ open Alaya (Result Error Output Executor)
 open Alaya.Agent (Agent Event Log Dialogue Outcome Directive View)
 open Alaya.Cas (Hash Store)
 
-/-! ## Event serialization
-
-Round-trips events losslessly (including tool-call `arguments`, the raw `invalidArguments?`
-string, and a response's reasoning trace), so a reconstructed log is what was recorded and its
-view is byte-identical to what the model was sent. -/
+/-! ## Event serialization -/
 
 private def toolCallToJson (call : Chat.ToolCall) : Lean.Json :=
   .mkObj [
@@ -76,7 +50,6 @@ def messageFromJson (json : Lean.Json) : Except String Chat.Message := do
   | "assistant" =>
     let content? := (json.getObjVal? "content" >>= Lean.Json.getStr?).toOption
     let calls ← toolCallsFromJson json
-    -- Absent in states written before it was recorded, which is exactly `none`.
     let reasoning? := (json.getObjVal? "reasoning" >>= Lean.Json.getStr?).toOption
     pure (.assistant content? calls reasoning?)
   | "tool" =>
@@ -142,7 +115,7 @@ inductive Kind where
   | turn
   /-- A person's workspace change, with the parent's log — plus a notice, when they left one. -/
   | intervention
-  /-- A grader's verdict on a state. Always a leaf: see `Evaluation`. -/
+  /-- A grader's verdict on a state; always a leaf. -/
   | evaluation
   /-- A person's message to the agent with no workspace change: see `tell`. -/
   | message
@@ -172,9 +145,7 @@ def Kind.ofString? : String -> Option Kind
   | "reply" => some .reply
   | _ => none
 
-/-- What a person told the agent between turns, and what they changed. Recorded so the notice
-the model saw can be re-rendered, and so a report can show the person's words apart from the
-envelope. -/
+/-- What a person told the agent between turns, and what they changed. -/
 structure Intervention where
   /-- The person's message, verbatim. -/
   message : String
@@ -183,8 +154,7 @@ structure Intervention where
   changed : Array String := #[]
   deriving Inhabited
 
-/-- The notice a person's intervention becomes in the log: a user turn with a fixed envelope,
-so the model can tell it from the task and from tool output. -/
+/-- The user turn an intervention becomes in the log. -/
 def interventionNotice (i : Intervention) : String :=
   let header :=
     if i.changed.isEmpty then "A person sent you a message while you were paused."
@@ -199,10 +169,8 @@ structure Question where
   text : String
   deriving Inhabited, BEq, Repr
 
-/-- The result of running a test command against a state.
-
-This is a separate axis from `Outcome`, which says how a *run* ended: a submitted run can fail
-its tests and a run that hit the step limit can pass them. -/
+/-- A grader's verdict on a state. A separate axis from `Outcome`, which says how a *run*
+ended: a submitted run can fail its grader and a run that hit the step limit can pass it. -/
 structure Evaluation where
   /-- The grader command as given, with its `{checkout}` and `{out}` placeholders unexpanded. -/
   grader : String
@@ -213,8 +181,7 @@ structure Evaluation where
   /-- A snapshot of the grader's output directory — reports, logs, whatever it wrote to `{out}` —
   or `none` when it wrote nothing. -/
   evidence? : Option Hash := none
-  /-- The grader's `{out}/verdict.json`, when it wrote one: a JSON object whose `passed` field,
-  if present, is the verdict, with any other fields the grader wants a reader to see. -/
+  /-- The grader's `{out}/verdict.json`, when it wrote one. -/
   summary? : Option Lean.Json := none
   deriving Inhabited
 
@@ -225,9 +192,7 @@ def Evaluation.passed (evaluation : Evaluation) : Bool :=
   | some verdict => verdict
   | none => evaluation.returncode == 0
 
-/-- A node of the trajectory tree, content-addressed in the store. `appended` are the events
-this state adds to its parent's log (the full log is the concatenation from the root); `workspace` is
-the workspace snapshot after this state's turn. -/
+/-- A node of the trajectory tree, content-addressed in the store. -/
 structure State where
   parent? : Option Hash
   workspace : Hash
@@ -240,9 +205,7 @@ structure State where
   note? : Option String := none
   /-- The verdict, on an `evaluation` state. -/
   evaluation? : Option Evaluation := none
-  /-- The pinned container image the commands of this trajectory run in, inherited from the
-  parent, or `none` when it runs on the host. Recorded so a continuation runs the same bits the
-  earlier turns did — and so a prompt that describes the machine stays true. -/
+  /-- The pinned container image, inherited from the root; `none` on the host. -/
   image? : Option String := none
   /-- What a person said and changed, on a `message` or `intervention` state that carried a
   message. The notice in `appended` is `interventionNotice` of it. -/
@@ -260,7 +223,7 @@ def calls (state : State) : Array Chat.ToolCall := Agent.Log.calls state.appende
 def continuable (state : State) : Except String Unit := do
   if state.outcome?.isSome then throw "cannot continue: this state already ended the run"
   if state.kind == .evaluation then
-    throw "cannot continue from an evaluation: its workspace holds tests the agent never saw"
+    throw "cannot continue from an evaluation: it is a verdict on its parent, not a point in the run"
   if let some q := state.question? then
     throw s!"this state is waiting for an answer to: {q.text}\nanswer it with `alaya reply HASH TEXT`"
 
@@ -349,11 +312,7 @@ def fromJson (json : Lean.Json) : Except String State := do
 
 end State
 
-/-! ## The store as a trajectory tree
-
-Each state is a store blob addressed by its own content; two kinds of ref record liveness so
-`Store.gc` preserves exactly the reachable nodes and trees: `state.<hex>` pins the node blob and
-`workspace.<hex>` pins a tree it refers to — its workspace, and an evaluation's evidence. -/
+/-! ## The store as a trajectory tree -/
 
 private def stateRef (h : Hash) : String := "state." ++ h.hex
 private def workspaceRef (h : Hash) : String := "workspace." ++ h.hex
@@ -419,12 +378,10 @@ partial def subtree (store : Store) (hash : Hash) : Result (Array Hash) := do
     acc := acc ++ (← subtree store kid)
   pure acc
 
-/-- Deletes a state and its whole subtree, then reclaims every blob no longer reachable from a
-surviving state or its workspace. -/
+/-- Deletes a state and its whole subtree, then reclaims every blob no longer reachable. -/
 def removeSubtree (store : Store) (hash : Hash) : Result Nat := do
   let doomed ← subtree store hash
-  -- Drop the doomed states' refs; then re-pin workspace refs from the survivors only, so a workspace
-  -- shared with a survivor stays live while one used only by the subtree is freed.
+  -- Re-pin tree refs from the survivors only, so a tree shared with a survivor stays live.
   for h in doomed do
     store.deleteRef (stateRef h)
   let refs ← store.listRefs
@@ -439,32 +396,24 @@ def removeSubtree (store : Store) (hash : Hash) : Result Nat := do
 
 /-! ## Model construction -/
 
-/-- Builds the model stack behind a `provider:name` spec, wrapping it with retry, batching, and
-the persistent cache that makes replay and forking deterministic. -/
+/-- The model stack behind a `provider:name` spec: provider, retry, batch, persistent cache. -/
 def buildModel (spec : String) (temperature : Float) (cacheDir : System.FilePath)
     (options : Provider.Options := {}) : Result Model := do
   let base ← Provider.fromSpec spec temperature options
-  -- Transport failures (a timeout, a dropped connection) are retried here, though the library
-  -- default is not to: the worry there is a request the provider processed before the line
-  -- died, and for a sampling that only costs a duplicate request. Not retrying costs more — the
-  -- run aborts, and resuming it starts a fresh container, so anything the agent kept outside
-  -- the workspace (`/tmp` scripts, installed packages) is gone when it continues.
+  -- Transport failures are retried: a duplicate request costs less than an aborted run, whose
+  -- container — and everything the agent kept outside the workspace — is lost on resume.
   let model ← base.retry { retryUnknownDelivery := true }
   let model ← model.batch .sequential
   Cache.persistent model { directory := cacheDir }
 
 /-! ## Driving the agent, recording each turn as a state -/
 
-/-- Where a trajectory's files live and its commands run: the store holding every durable
-artefact, the working directory holding none, and the executor. Enough for everything that does
-not sample — checking a state out, evaluating it — and the part of a `Runtime` that is. -/
+/-- Where a trajectory's files live and its commands run; the part of a `Runtime` that does not
+sample. -/
 structure Sandbox where
-  /-- Where everything durable lives. -/
   store : Store
-  /-- Where the agent acts. Wiped and re-materialized from a snapshot at every checkout, so
-  nothing here survives a turn that is not first captured into `store`. -/
+  /-- Wiped and re-materialized from a snapshot at every checkout; holds nothing durable. -/
   workDir : System.FilePath
-  /-- Where shell commands run: the agent's, and an evaluation's test command. -/
   executor : Executor
 
 /-- The live run: a sandbox, the model, and the agent being driven. -/
@@ -500,17 +449,11 @@ private partial def follow (rt : Runtime) (log : Log) (appended : Log) (workspac
     follow rt (log.push event) (appended.push event) workspace
 
 /-- Runs one model turn from `parent` (whose log is `log` and workspace is `workspace`, already
-materialized into `rt.workDir`), records the turn as a new child state, and returns the child,
-its log, its workspace, and why the turn stopped, if it did.
-
-Sampling asks for draw index `= turn children of parent`, replaying recorded branches and
-appending exactly one new draw — so a new continuation is always a fresh sibling, and an
-interrupted run resumes deterministically from its cache. -/
+materialized into `rt.workDir`), records it as a new child state, and returns the child, its log,
+its workspace, and why the turn stopped, if it did. -/
 def advance (rt : Runtime) (note : String) (parent : Hash) (log : Log) (workspace : Hash) :
     Result (Hash × Log × Hash × Halt) := do
-  -- Only children that came from sampling consume a draw: an evaluation, an intervention, a
-  -- message, or a reply is recorded against a state without asking the model anything, and
-  -- counting it would push the next continuation past a draw the cache holds.
+  -- Draw index = the number of children that came from sampling.
   let mut childCount := 0
   for child in ← children rt.store parent do
     let kind := (← getState rt.store child).kind
@@ -531,12 +474,9 @@ def advance (rt : Runtime) (note : String) (parent : Hash) (log : Log) (workspac
     note? := some note, image? }
   pure (child, log ++ appended, workspace, halt)
 
-/-- Materializes `workspace` into `rt.workDir`, replacing whatever is there.
-
-The work directory is modified after every checkout by the commands of the run, so
-`MaterializeConfig.verify`, on by default, is what keeps this sound: without re-capturing the
-directory first, an incremental materialize would trust a stale record and leave everything
-those writes added, so a fork would start from the abandoned branch's files. -/
+/-- Materializes `workspace` into `rt.workDir`, replacing whatever is there. Relies on
+`MaterializeConfig.verify` (the default): the run's commands modify the directory after every
+checkout, and an incremental apply against the stale record would keep those writes. -/
 private def checkoutInto (sandbox : Sandbox) (workspace : Hash) : Result Unit :=
   sandbox.store.materialize workspace sandbox.workDir { onExisting := .replace }
 
@@ -563,15 +503,7 @@ partial def resume (rt : Runtime) (note : String) (hash : Hash)
     | _ => pure child
   go hash (← logOf rt.store hash) start.workspace
 
-/-! ## Evaluation
-
-Grading a state is deliberately not part of the run, and not the agent's business: a **grader**
-is a program the person supplies, run on the host against a fresh checkout of the state's
-workspace. It may copy hidden tests over the checkout, apply a patch to it, re-render a clean
-project from a source it controls and carry only the agent's edits across, run a container, or
-anything else; the trajectory only provides the checkout, collects what the grader says, and
-records the verdict as a leaf child. Nothing the grader does reaches a state the agent could
-continue from, because the checkout is a separate directory that is discarded afterwards. -/
+/-! ## Evaluation -/
 
 /-- The grader command with its placeholders expanded: `{checkout}` is the directory holding the
 state's files, `{out}` an empty directory for whatever the grader wants kept. -/
@@ -605,14 +537,9 @@ private def emptyDir (dir : System.FilePath) : Result Unit :=
 private def nonEmpty (dir : System.FilePath) : Result Bool :=
   Result.fromIO Error.storage do pure (!(← dir.readDir).isEmpty)
 
-/-- Runs `grader` against a fresh checkout of `hash`'s workspace and records the verdict as a
-leaf child. The command runs on the host through `/bin/sh`, in the checkout, with `{checkout}`
-and `{out}` expanded (see `expandGrader`), under `timeoutSeconds`. Its merged output and exit
-status are recorded; whatever it left in `{out}` is snapshotted as `evidence?`, and an
-`{out}/verdict.json` becomes `summary?`, whose `passed` field decides the verdict when present.
-`scratch` is a directory the trajectory may wipe: the checkout and the output directory are
-made under it. Re-evaluating a state with the same grader returns the existing node unless
-`force`. -/
+/-- Runs `grader` on the host against a fresh checkout of `hash`'s workspace and records the
+verdict as a leaf child. `scratch` is a directory the trajectory may wipe: the checkout and the
+grader's output directory are made under it. -/
 def evaluate (store : Store) (scratch : System.FilePath) (hash : Hash) (grader : String)
     (timeoutSeconds : Nat := 900) (force : Bool := false) : Result Hash := do
   let state ← getState store hash
@@ -660,14 +587,12 @@ def createRoot (store : Store) (log : Log) (project : System.FilePath)
   let workspace ← store.snapshot project
   putState store { parent? := none, workspace, kind := .root, appended := log, note?, image? }
 
-/-- A state a person may build on: anything but an evaluation, whose workspace holds tests the
-agent never saw, or a state waiting for an answer, which `reply` alone grows. An ended run is
-fine — fixing something after a submission and continuing from there is what interventions are
-for. -/
+/-- A state a person may build on: anything but an evaluation, which is a leaf, or a state
+waiting for an answer, which `reply` alone grows. An ended run is fine: fixing something after a
+submission and continuing is what interventions are for. -/
 private def buildable (state : State) : Result Unit := do
   if state.kind == .evaluation then
-    throw <| .configuration
-      "cannot build on an evaluation: its workspace holds tests the agent never saw"
+    throw <| .configuration "cannot build on an evaluation: it is a verdict, not a point in the run"
   if let some q := state.question? then
     throw <| .configuration
       s!"this state is waiting for an answer to: {q.text}\nanswer it with `alaya reply HASH TEXT`"
@@ -680,9 +605,8 @@ private def changedLines (store : Store) (before after : Hash) : Result (Array S
     | .removed path _ => s!"- {path}"
     | .modified path _ _ => s!"M {path}"
 
-/-- Records a hand-edited workspace `dir` as an intervention child of `hash`: new workspace
-snapshot, and the parent's log — plus, with `tell?`, a notice to the model saying what was said
-and which paths changed. Without it the model learns of the change only by running commands. -/
+/-- Records a hand-edited workspace `dir` as an intervention child of `hash`, with a notice to
+the model when `tell?` is given. -/
 def commit (store : Store) (hash : Hash) (dir : System.FilePath) (note? : Option String)
     (tell? : Option String := none) : Result Hash := do
   let parent ← getState store hash
@@ -710,9 +634,8 @@ def tell (store : Store) (hash : Hash) (message : String) : Result Hash := do
     intervention? := some intervention
     image? := parent.image? }
 
-/-- Answers the question `hash` is waiting on: a child with the same workspace whose one appended
-event is the observation of the asking call, carrying `text` verbatim. Answering the same
-question again makes a sibling — a fork on the answer. -/
+/-- Answers the question `hash` is waiting on: a child whose one event is the observation of the
+asking call, carrying `text` verbatim. -/
 def reply (store : Store) (hash : Hash) (text : String) : Result Hash := do
   let parent ← getState store hash
   let question ← match parent.question? with
@@ -736,10 +659,8 @@ def waiting (store : Store) : Result (Array (Hash × Question)) := do
       let answered ← kids.anyM fun kid => do pure ((← getState store kid).kind == .reply)
       pure (if answered then none else some (hash, q))
 
-/-! ## Rendering
-
-Everything here is generic: a tool call is shown by name and arguments, an observation by its
-content. What a call *means* is the agent's business. -/
+/-! ## Rendering: generic over tools — a call by name and arguments, an observation by its
+content. -/
 
 private def take (s : String) (n : Nat) : String := String.ofList (s.toList.take n)
 

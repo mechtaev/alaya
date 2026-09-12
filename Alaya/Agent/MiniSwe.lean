@@ -1,14 +1,8 @@
 import Alaya.Agent
 import Alaya.Executor
 
-/-!
-A port of mini-SWE-agent's default tool-calling agent (`mini.yaml` + `litellm_model` +
-`actions_toolcall`) as an `Alaya.Agent.Agent`: the same prompts, the same `bash` tool, the same
-protocol for reading a response and answering a malformed one, and the same limits. Rendering
-and command execution are Lean's own — an observation is a JSON value, output is decoded by the
-core — and a run ends with a `submit` tool call rather than a sentinel in a command's output.
-See `docs/miniswe.md`.
--/
+/-! A port of mini-SWE-agent's default tool-calling agent as an `Alaya.Agent.Agent`. See
+`docs/miniswe.md`. -/
 
 namespace Alaya.Agent.MiniSwe
 
@@ -33,12 +27,11 @@ structure Config where
   executor : Executor.Config := defaultExecutor
   deriving Inhabited
 
-/-! ## Prompts (rendered `mini.yaml` templates)
+/-! ## Prompts
 
-These are the exact strings jinja produces from `mini.yaml`, except for the sentences that name
-mini's submission sentinel, which name the `submit` tool instead (`submitInstruction`; the test
-suite holds mini's original wording). The only variable parts are the task and the `uname`
-system-information line. jinja strips one trailing newline, so none of these end in `\n`. -/
+The strings jinja renders from `mini.yaml`, except for the two sentences that name mini's
+submission sentinel (`submitInstruction`). jinja strips one trailing newline, so none end in
+`\n`. -/
 
 def systemMessage : String :=
   "You are a helpful assistant that can interact with a computer."
@@ -65,25 +58,21 @@ def instanceMessage (task system release version machine : String) : String :=
     system ++ " " ++ release ++ " " ++ version ++ " " ++ machine ++
     (if system == "Darwin" then instanceSuffixDarwin else instanceSuffixOther)
 
-/-- The opening log of a run: the system prompt and the task. `uname` is passed in because it
-describes where the commands will run, which is the executor's business, and because this log
-is frozen into the root state at creation time. -/
+/-- The opening log of a run: the system prompt and the task. -/
 def initialLog (config : Config) (uname : Uname) : Log :=
   #[.message (.system systemMessage),
     .message (.user (instanceMessage config.task uname.system uname.release uname.version uname.machine))]
 
 /-! ## Tools -/
 
-/-- The `bash` tool: mini's `BASH_TOOL`, serialized in strict mode. The one visible difference
-from mini's JSON is the `"additionalProperties": false` every strict object carries. -/
+/-- Mini's `bash` tool. -/
 def bashTool : Chat.ToolDefinition := {
   name := "bash"
   description := "Execute a bash command"
   parameters := .object #[("command", .string (description? := some "The bash command to execute"))]
 }
 
-/-- The tool that ends a run, in place of mini's output sentinel. `message` is required, so the
-model always says what it did; it becomes the run's submission. -/
+/-- The tool that ends a run; its `message` becomes the submission. -/
 def submitTool : Chat.ToolDefinition := {
   name := "submit"
   description := "Finish the task. Call this once your changes are complete; nothing runs after it."
@@ -98,9 +87,8 @@ def tools : Array Chat.ToolDefinition := #[bashTool, submitTool]
 /-- How much of a command's output the model is shown; longer outputs show their head and tail. -/
 def outputLimit : Nat := 10000
 
-/-- The tool message for an execution result: the recorded `Output` as JSON, with `output` cut to
-its first and last `outputLimit / 2` characters when it is `outputLimit` or longer, and the count
-of what was left out. The record keeps the whole output; only the model sees the cut. -/
+/-- The tool message for an execution result: the recorded `Output` as JSON, with `output`
+cut to its first and last `outputLimit / 2` characters when it is `outputLimit` or longer. -/
 def observation (o : Output) : Lean.Json :=
   let length := o.output.length
   let fields : List (String × Lean.Json) :=
@@ -123,8 +111,7 @@ def observation (o : Output) : Lean.Json :=
 def endHint : String :=
   "If you want to end the task, call the `submit` tool\nwithout any other tool call."
 
-/-- The user turn a malformed response is answered with: a truncation notice when the provider
-signalled that it cut the response off, otherwise tool-call guidance wrapping `error`. -/
+/-- The user turn a malformed response is answered with. -/
 def formatErrorMessage (error : String) (hasToolCalls : Bool) (finishReason? : Option String) : String :=
   let truncated := match finishReason? with
     | some "length" => true
@@ -157,9 +144,7 @@ inductive Parsed where
   | actions (actions : Array Action)
   | formatError (message : String)
 
-/-- Reads a response's tool calls. Every call must carry arguments that parse as JSON, name a
-known tool, and, for `bash`, carry a string `command`; the first call that does not makes the
-whole turn a format error, with a message saying what was wrong. -/
+/-- Reads a response's tool calls; the first call with a problem makes the turn a format error. -/
 def parseActions (response : Chat.Response) : Parsed := Id.run do
   if response.toolCalls.isEmpty then
     return .formatError <| formatErrorMessage
@@ -196,10 +181,8 @@ def parseActions (response : Chat.Response) : Parsed := Id.run do
 
 /-! ## The agent: view, control, action -/
 
-/-- The projection of the log onto the dialogue, event by event: a message as it is; a
-response as the assistant turn it was, unless it failed to parse, in which case the turn is
-dropped and the format error is shown as a user turn instead; an observation as the JSON of the
-recorded `Output`, with long output cut (`observation`). -/
+/-- The view: a malformed response is shown as the format error, as a user turn; an observation
+as `observation` of the recorded `Output`. -/
 def view (log : Log) : Dialogue :=
   log.map fun
     | .message m => m
@@ -213,9 +196,8 @@ def view (log : Log) : Dialogue :=
         | none => content
       .tool id (.str json.pretty)
 
-/-- How many format-error responses end the log, with no clean turn between them — mini's
-`n_consecutive_format_errors`. A person's message in between does not reset it; an observation
-does, since it means a turn ran. -/
+/-- How many format-error responses end the log with no clean turn between them. A person's
+message in between does not reset the count; an observation does, since it means a turn ran. -/
 private def trailingFormatErrors (log : Log) : Nat := Id.run do
   let mut count := 0
   for event in log.reverse do
@@ -228,9 +210,7 @@ private def trailingFormatErrors (log : Log) : Nat := Id.run do
     | .message _ => pure ()
   return count
 
-/-- Mini's control flow, decided from the log. Mirrors `DefaultAgent.run`: limits are checked
-before each model call; after a format error the run continues (the view shows the error) or
-exits after too many in a row; a turn's actions run in order until a `submit` ends the run. -/
+/-- Mini's control flow (`DefaultAgent.run`), decided from the log. -/
 def next (config : Config) (log : Log) : Directive :=
   let sampleOrStop : Directive :=
     if config.stepLimit > 0 && log.responses >= config.stepLimit
@@ -263,7 +243,7 @@ def act (executor : Executor) (workspace : Agent.Workspace) (call : Chat.ToolCal
   let output ← Result.fromIO Error.storage (executor.bash workspace.dir command)
   pure output.toJson
 
-/-- The mini agent over an executor; the workspace arrives with each act. -/
+/-- The mini agent over an executor. -/
 def agent (executor : Executor) (config : Config) : Agent := {
   identity := .mkObj [
     ("agent", "mini-swe"), ("step_limit", (config.stepLimit : Lean.Json)),

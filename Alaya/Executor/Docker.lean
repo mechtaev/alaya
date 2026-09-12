@@ -1,23 +1,10 @@
 import Alaya.Executor
 import Alaya.Cli
 
-/-!
-An `Executor` that runs commands in a container.
-
-The workspace stays where it was: the working directory is bind-mounted at `/workspace`, so the
-content-addressed store still snapshots a host directory and the trajectory tree is unaffected
-by the choice of executor. One container is started per run and every command goes through
-`docker exec`, which reproduces a persistent environment *within* a run — an install in one
-command is visible to the next.
-
-The deviation that buys: mutations outside `/workspace` are not part of any snapshot, so a
-branch resumed in a later run starts from the image again. Anything that must survive branching
-has to land in the workspace or in the image.
-
-The command itself sees exactly what it sees locally: the same `exec /bin/sh -c "$@" 2>&1`
-trampoline, the same argv, the same merged stderr, and the environment overrides applied to the
-command rather than to the client.
--/
+/-! An `Executor` that runs commands in one container per run, with the working directory
+bind-mounted at `/workspace`, so the store still snapshots a host directory. The command runs
+through the same trampoline as on the host, with the environment overrides applied to the
+command rather than to the docker client. -/
 
 namespace Alaya.Executor.Docker
 
@@ -34,10 +21,7 @@ structure Settings where
   Linux this must be the host user or the host can neither snapshot nor wipe them. Docker
   Desktop virtualizes ownership, so macOS leaves it unset. -/
   user? : Option String := none
-  /-- `docker run --network`. Off by default: an agent with network access can fetch its own
-  reference solution, install what the task meant it to write, or ask another model, so an image
-  should carry what a task legitimately needs and the network is enabled explicitly
-  (`--network bridge`) when a run really needs it. -/
+  /-- `docker run --network`; off by default, see `docs/trajectory-schema.md` §8. -/
   network? : Option String := some "none"
   /-- Extra `docker run` arguments, verbatim. -/
   extraRunArgs : Array String := #[]
@@ -126,9 +110,9 @@ def uname (settings : Settings) : Result Uname := do
            version := version.trimAscii.toString, machine := machine.trimAscii.toString }
   | _ => throw <| .configuration s!"unexpected uname output from {settings.image}: {out}"
 
-/-- A running container, plus whether its image has `timeout(1)` — the in-container kill that
-matches mini's process-group semantics. Minimal images may not, and then the host-side deadline
-below is the only backstop. -/
+/-- A running container, plus whether its image has `timeout(1)`, which kills the command's
+whole process group inside. Minimal images may not, and then the host-side deadline below is the
+only backstop. -/
 private structure Container where
   id : String
   hasTimeout : Bool
@@ -269,8 +253,7 @@ def executor (settings : Settings) (config : Config) : Result Executor := do
 
 /-! ## Command line -/
 
-/-- Settings for a given image, taking `--container-user` and `--network` from the line. Without
-`--network` the container has no network. -/
+/-- Settings for a given image, taking `--container-user` and `--network` from the line. -/
 def settingsFor (args : Cli.Args) (image : String) : Result Settings := do
   let user? ← match args.get? "container-user" with
     | some user => pure (some user)
